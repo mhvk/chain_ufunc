@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 from ..chain_ufunc import Input, Mapping
 
@@ -73,3 +74,12 @@ class TestIdentities:
         mulsinarcsin = np.arcsin(np.sin(np.multiply(Input(), Input())))
         mulsinarcsin2 = np.arcsin(mulsin)
         assert mulsinarcsin == mulsinarcsin2
+
+
+class TestDigraph:
+    pytest.importorskip('graphviz')
+
+    def test_digraph_creation(self, tmpdir):
+        muladd = np.add(Input(), np.multiply(Input(), Input()))
+        digraph = muladd.digraph()
+        digraph.render(str(tmpdir.join('digraph.gv')))
