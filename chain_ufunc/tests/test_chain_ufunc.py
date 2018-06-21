@@ -27,12 +27,15 @@ class TestSimple:
         chck = np.modf(np.add(in1, in2))
         assert np.all(tst[0] == chck[0]) and np.all(tst[1] == chck[1])
 
-    # def test_two_inputs(self):
-    #     two_inputs = Mapping([0, 1])
-    #     muladd = np.add(np.multiply(*two_inputs), input)
-    #     # muladd = np.add(np.multiply(input, input), input)
-    #     tst = muladd(in1, np.array(3.), in2)
-    #     assert np.all(tst == in1 * 3. + in2)
+    def test_two_functions_three_inputs21(self):
+        muladd = np.add(np.multiply(Input(), Input()), Input())
+        tst = muladd(self.degrees, self.deg2rad, np.pi)
+        assert np.all(tst == self.degrees * self.deg2rad + np.pi)
+
+    def test_two_functions_three_inputs12(self):
+        muladd = np.add(Input(), np.multiply(Input(), Input()))
+        tst = muladd(np.pi, self.degrees, self.deg2rad)
+        assert np.all(tst == np.pi + self.degrees * self.deg2rad)
 
 
 class TestIndexing:

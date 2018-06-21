@@ -398,8 +398,6 @@ class Input:
             print(ufunc, method, inputs, kwargs)
             return NotImplemented
 
-        result = ChainedUfunc.from_ufunc(ufunc)
-
         if not all(isinstance(a, Input) for a in inputs):
             if ufunc.nin > 2:
                 print('>2 inputs, with some not Input')
@@ -407,10 +405,22 @@ class Input:
             if any(a.nout > 1 for a in inputs):
                 print('>1 output for some input')
                 return NotImplemented
-            # self_first = self is inputs[0]
-            # other = inputs[1] if self_first else inputs[0]
-            # new_maps = other._adjusted_maps(self_first, other1, 1)
-            # new_maps = inputs[1]._adjusted_maps(1, 1, 1)
+            self_first = self is inputs[0]
+            result = (inputs[1] if self_first else inputs[0]).copy()
+            result.append(ufunc)
+            if self_first:
+                input_maps = result._adjusted_maps(
+                    1, 0, 0, map_names=('input_maps',))['input_maps']
+                input_maps[-1][-1] = 0
+                result.input_maps = input_maps
+                for i in range(result.nin - 1, 0, -1):
+                    result.names[i] = result.names[i - 1]
+                result.names[0] = self.name
+            else:
+                result.names[result.nin - 1] = self.name
+            return result
+
+        result = ChainedUfunc.from_ufunc(ufunc)
 
         names = [a.name for a in inputs]
         if len(names) - names.count(None) != len(set(names) - {None}):
