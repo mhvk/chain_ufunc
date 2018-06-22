@@ -53,7 +53,7 @@ class ChainedUfunc(object):
             if 'out' in kwargs:
                 raise TypeError("got multiple values for 'out'")
             outputs = list(args[self.nin:])
-            outputs += [None] * (self.out - len(outputs))
+            outputs += [None] * (self.nout - len(outputs))
             inputs = list(args[:self.nin])
         else:
             inputs = list(args)
@@ -89,9 +89,6 @@ class ChainedUfunc(object):
         outputs = arrays[self.nin:self.nin+self.nout]
 
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
-
-    def __or__(self, other):
-        return self.from_links([self, other])
 
     def _adjusted_maps(self, off_in, off_out, off_tmp,
                        map_names=('input_maps', 'output_maps')):
@@ -137,79 +134,6 @@ class ChainedUfunc(object):
         output_map = list(range(ufunc.nin, ufunc.nargs))
         return cls([ufunc], [input_map], [output_map],
                    ufunc.nin, ufunc.nout, 0)
-
-    def copy(self):
-        return self.from_link(self)
-
-    @classmethod
-    def from_link(cls, link):
-        if isinstance(link, np.ufunc):
-            return cls.from_ufunc(link)
-
-        return cls(link.ufuncs, link.input_maps, link.output_maps,
-                   link.nin, link.nout, link.ntmp, link.names)
-
-    @classmethod
-    def from_links(cls, links):
-        result = cls.from_link(links[0])
-        for link in links[1:]:
-            result.append(link)
-        return result
-
-    def append(self, other):
-        """In-place addition of a single link."""
-        if not isinstance(other, ChainedUfunc):
-            if isinstance(other, np.ufunc):
-                other = ChainedUfunc.from_ufunc(other)
-            else:
-                raise TypeError("link should be a (chained) ufunc.")
-
-        # First determine whether our outputs suffice for inputs;
-        # if not, we need new inputs, and thus have to rearrange our maps.
-        extra_nin = max(other.nin - self.nout, 0)
-        nin = self.nin + extra_nin
-        # take as many inputs as needed and can be provided from our outputs
-        # (or rather where they will be after remapping).
-        n_other_in_from_self_out = min(other.nin, self.nout)
-        # For now, these inputs are only allowed at the start of other
-        # (need to assign a temporary for them otherwise)
-        for other_input_map in other.input_maps[1:]:
-            if any(i < n_other_in_from_self_out for i in other_input_map):
-                raise NotImplementedError(
-                    "Cannot yet append chain in which an input does not "
-                    "immediately use the outputs.")
-
-        other_input_remap = list(range(nin, nin+n_other_in_from_self_out))
-        if extra_nin:
-            # add any missing ones from the new inputs.
-            other_input_remap += list(range(self.nin, nin))
-
-        # For the maps before the appending, we just need to add offsets
-        # so that any new inputs can be accomodated. Note that some outputs
-        # may become temporaries or vice versa; that's OK.
-        self_maps = self._adjusted_maps(0, extra_nin, extra_nin)
-
-        # Now see how the number of outputs changes relative to other.
-        nout = other.nout + max(self.nout - other.nin, 0)
-        other_maps = other._adjusted_maps(0, nin - other.nin,
-                                          nin - other.nin + nout - other.nout)
-        # finally change where other gets its inputs.
-        other_input_maps = ([[other_input_remap[i]
-                              for i in other_maps['input_maps'][0]]] +
-                            other_maps['input_maps'][1:])
-
-        # Set up for in-place update
-        ufuncs = self.ufuncs + other.ufuncs
-        input_maps = self_maps['input_maps'] + other_input_maps
-        output_maps = self_maps['output_maps'] + other_maps['output_maps']
-        ntmp = max(self.nout + self.ntmp - nout,
-                   other.nout + other.ntmp - nout, 0)
-        names = self.names
-        if extra_nin:
-            names += other.names[self.nout:]
-
-        # Update in-place.
-        self.__init__(ufuncs, input_maps, output_maps, nin, nout, ntmp, names)
 
     def __repr__(self):
         return ("ChainedUfunc(ufuncs={ufuncs}, "
@@ -308,6 +232,36 @@ class WrappedUfunc(object):
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
 
+    @property
+    def ufuncs(self):
+        return getattr(self.ufunc, 'ufuncs', [self.ufunc])
+
+    @property
+    def nin(self):
+        return self.ufunc.nin
+
+    @property
+    def nout(self):
+        return self.ufunc.nout
+
+    @property
+    def nargs(self):
+        return self.ufunc.nargs
+
+    @property
+    def ntmp(self):
+        return getattr(self.ufunc, 'ntmp', 0)
+
+    @property
+    def input_maps(self):
+        return getattr(self.ufunc, 'input_maps',
+                       [list(range(self.ufunc.nin))])
+
+    @property
+    def output_maps(self):
+        return getattr(self.ufunc, 'output_maps',
+                       [list(range(self.ufunc.nin))])
+
     def __eq__(self, other):
         return (type(self) is type(other) and
                 self.__dict__ == other.__dict__)
@@ -339,6 +293,62 @@ class WrappedUfunc(object):
             max(s_uf.ntmp, o_uf.ntmp),
             s_uf.names + o_uf.names))
 
+    def __or__(self, other):
+        if isinstance(other, (ChainedUfunc, np.ufunc)):
+            other = self.__class__(other)
+        elif not isinstance(other, WrappedUfunc):
+            return NotImplemented
+
+        cls = type(self)
+        self = self.ufunc
+        other = other.ufunc
+        # First determine whether our outputs suffice for inputs;
+        # if not, we need new inputs, and thus have to rearrange our maps.
+        extra_nin = max(other.nin - self.nout, 0)
+        nin = self.nin + extra_nin
+        # take as many inputs as needed and can be provided from our outputs
+        # (or rather where they will be after remapping).
+        n_other_in_from_self_out = min(other.nin, self.nout)
+        # For now, these inputs are only allowed at the start of other
+        # (need to assign a temporary for them otherwise)
+        for other_input_map in other.input_maps[1:]:
+            if any(i < n_other_in_from_self_out for i in other_input_map):
+                raise NotImplementedError(
+                    "Cannot yet append chain in which an input does not "
+                    "immediately use the outputs.")
+
+        other_input_remap = list(range(nin, nin+n_other_in_from_self_out))
+        if extra_nin:
+            # add any missing ones from the new inputs.
+            other_input_remap += list(range(self.nin, nin))
+
+        # For the maps before the appending, we just need to add offsets
+        # so that any new inputs can be accomodated. Note that some outputs
+        # may become temporaries or vice versa; that's OK.
+        self_maps = self._adjusted_maps(0, extra_nin, extra_nin)
+
+        # Now see how the number of outputs changes relative to other.
+        nout = other.nout + max(self.nout - other.nin, 0)
+        other_maps = other._adjusted_maps(0, nin - other.nin,
+                                          nin - other.nin + nout - other.nout)
+        # finally change where other gets its inputs.
+        other_input_maps = ([[other_input_remap[i]
+                              for i in other_maps['input_maps'][0]]] +
+                            other_maps['input_maps'][1:])
+
+        # Set up for in-place update
+        ufuncs = self.ufuncs + other.ufuncs
+        input_maps = self_maps['input_maps'] + other_input_maps
+        output_maps = self_maps['output_maps'] + other_maps['output_maps']
+        ntmp = max(self.nout + self.ntmp - nout,
+                   other.nout + other.ntmp - nout, 0)
+        names = self.names
+        if extra_nin:
+            names += other.names[self.nout:]
+
+        return cls(self.__class__(ufuncs, input_maps, output_maps,
+                                  nin, nout, ntmp, names))
+
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
                       all(isinstance(a, WrappedUfunc) for a in inputs))
@@ -348,6 +358,8 @@ class WrappedUfunc(object):
         if not self._can_handle(ufunc, method, *inputs, **kwargs):
             return NotImplemented
 
+        wrapped_ufunc = self.__class__(ufunc)
+
         if any(a.outsel for a in inputs):
             if not all(a.ufunc is self.ufunc for a in inputs):
                 raise NotImplementedError("different selections on ufuncs")
@@ -355,16 +367,13 @@ class WrappedUfunc(object):
             if [a.outsel for a in inputs] != list(range(self.ufunc.nout)):
                 raise NotImplementedError("not all outputs")
 
-            combined_input = self.ufunc
+            return self | wrapped_ufunc
         else:
             # combine inputs
             combined_input = inputs[0]
             for input_ in inputs[1:]:
                 combined_input &= input_
-            combined_input = combined_input.ufunc
-
-        new_ufunc = ChainedUfunc.from_links([combined_input, ufunc])
-        return self.__class__(new_ufunc)
+            return combined_input | wrapped_ufunc
 
     def __getitem__(self, item):
         if self.ufunc.nout == 1:
@@ -407,31 +416,32 @@ class Input(object):
                 raise NotImplementedError('>2 inputs, with some not Input')
 
             self_first = self is inputs[0]
-            result = inputs[self_first].ufunc
-            if result.nout > 1:
+            result = inputs[self_first]
+            if result.ufunc.nout > 1:
                 print('>1 output for non-Input input')
                 return NotImplemented
-            result.append(ufunc)
+            result |= WrappedUfunc(ufunc)
+            r_uf = result.ufunc
             if self_first:
-                input_maps = result._adjusted_maps(
+                input_maps = r_uf._adjusted_maps(
                     1, 0, 0, map_names=('input_maps',))['input_maps']
                 input_maps[-1][-1] = 0
-                result.input_maps = input_maps
-                for i in range(result.nin - 1, 0, -1):
-                    result.names[i] = result.names[i - 1]
-                result.names[0] = self.name
+                r_uf.input_maps = input_maps
+                for i in range(r_uf.nin - 1, 0, -1):
+                    r_uf.names[i] = r_uf.names[i - 1]
+                r_uf.names[0] = self.name
             else:
-                result.names[result.nin - 1] = self.name
+                r_uf.names[result.ufunc.nin - 1] = self.name
+
+            return result
 
         else:
-            result = ChainedUfunc.from_ufunc(ufunc)
+            result = WrappedUfunc(ufunc)
 
             names = [a.name for a in inputs]
             if len(names) - names.count(None) != len(set(names) - {None}):
                 print("duplicate names")
 
-                # combine inputs
-                result.input_maps[0] = list(range(ufunc.nin))
-                result.names = names
-
-        return WrappedUfunc(result)
+            # combine inputs
+            result.ufunc.names = names
+            return result
