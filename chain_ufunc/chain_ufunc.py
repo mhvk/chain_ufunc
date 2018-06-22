@@ -90,26 +90,6 @@ class ChainedUfunc(object):
 
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
-    @classmethod
-    def from_ufunc(cls, ufunc):
-        """Wrap a ufunc as a ChainedUfunc.
-
-        Parameters
-        ----------
-        ufunc : ufunc-like
-            If already a ChainedUfunc, the instance will be returned directly.
-        """
-        if isinstance(ufunc, cls):
-            return ufunc
-
-        if not isinstance(ufunc, np.ufunc):
-            raise TypeError("ufunc should be an 'np.ufunc' instance.")
-
-        input_map = list(range(ufunc.nin))
-        output_map = list(range(ufunc.nin, ufunc.nargs))
-        return cls([ufunc], [input_map], [output_map],
-                   ufunc.nin, ufunc.nout, 0)
-
     def __repr__(self):
         return ("ChainedUfunc(ufuncs={ufuncs}, "
                 "input_maps={input_maps}, "
@@ -202,10 +182,20 @@ class WrappedUfunc(object):
         Ufunc to wrap
     """
     def __init__(self, ufunc, outsel=None):
-        self.ufunc = ChainedUfunc.from_ufunc(ufunc)
+        if isinstance(ufunc, np.ufunc):
+            input_map = list(range(ufunc.nin))
+            output_map = list(range(ufunc.nin, ufunc.nargs))
+            ufunc = ChainedUfunc([ufunc], [input_map], [output_map],
+                                 ufunc.nin, ufunc.nout, 0)
+        elif not isinstance(ufunc, ChainedUfunc):
+            raise TypeError("can only wrap ufuncs")
+
+        self.ufunc = ufunc
+
         if outsel and ufunc.nout == 1:
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
+
         for attr in ('ufuncs', 'nin', 'nout', 'ntmp',
                      'input_maps', 'output_maps', 'names'):
             setattr(self, attr, getattr(self.ufunc, attr))
