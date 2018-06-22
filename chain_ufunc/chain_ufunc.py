@@ -206,41 +206,9 @@ class WrappedUfunc(object):
         if outsel and ufunc.nout == 1:
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
-
-    @property
-    def ufuncs(self):
-        return getattr(self.ufunc, 'ufuncs', [self.ufunc])
-
-    @property
-    def nin(self):
-        return self.ufunc.nin
-
-    @property
-    def nout(self):
-        return self.ufunc.nout
-
-    @property
-    def nargs(self):
-        return self.ufunc.nargs
-
-    @property
-    def ntmp(self):
-        return getattr(self.ufunc, 'ntmp', 0)
-
-    @property
-    def input_maps(self):
-        return getattr(self.ufunc, 'input_maps',
-                       [list(range(self.ufunc.nin))])
-
-    @property
-    def output_maps(self):
-        return getattr(self.ufunc, 'output_maps',
-                       [list(range(self.ufunc.nin))])
-
-    @property
-    def names(self):
-        return getattr(self.ufunc, 'names',
-                       [None] * self.ufunc.nout)
+        for attr in ('ufuncs', 'nin', 'nout', 'ntmp',
+                     'input_maps', 'output_maps', 'names'):
+            setattr(self, attr, getattr(self.ufunc, attr))
 
     def __eq__(self, other):
         return (type(self) is type(other) and
