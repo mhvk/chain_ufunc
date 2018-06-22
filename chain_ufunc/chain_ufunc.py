@@ -5,7 +5,7 @@ __all__ = ['ChainedUfunc', 'WrappedUfunc', 'Input']
 
 
 class ChainedUfunc(object):
-    """Calculates a chain of ufuncs.
+    """A chain of ufuncs that are evaluated in turn.
 
     Parameters
     ----------
@@ -31,6 +31,7 @@ class ChainedUfunc(object):
         self.nin = nin
         self.nout = nout
         self.ntmp = ntmp
+        self.nargs = nin+nout
         # should have something for different types.
         if names is None:
             names = [None] * nin
@@ -43,47 +44,51 @@ class ChainedUfunc(object):
     def __call__(self, *args, **kwargs):
         """Evaluate the ufunc.
 
-        All inputs should be in args, an output can be given in kwargs.
+        Args should contain all inputs, but outputs can be given after,
+        or be in kwargs.
         """
         if len(args) != self.nin:
-            raise ValueError("invalid number of arguments.")
+            if len(args) > self.nargs:
+                raise TypeError("invalid number of arguments")
+            if 'out' in kwargs:
+                raise TypeError("got multiple values for 'out'")
+            outputs = list(args[self.nin:])
+            outputs += [None] * (self.out - len(outputs))
+            inputs = list(args[:self.nin])
+        else:
+            inputs = list(args)
+            outputs = kwargs.pop('out', None)
+            if outputs is None:
+                outputs = [None] * self.nout
+            elif not isinstance(outputs, tuple):
+                outputs = [outputs]
 
-        args = tuple(np.asanyarray(arg) for arg in args)
-        outputs = kwargs.pop('out', None)
-        if outputs is None:
-            shape = np.broadcast(*args).shape
-            dtype = np.common_type(*args)
-            outputs = tuple(np.zeros(shape, dtype) for i in range(self.nout))
-        elif not isinstance(outputs, tuple):
-            outputs = (outputs,)
+            if len(outputs) != self.nout:
+                raise ValueError("invalid number of outputs")
 
-        # TODO: check for None in outputs.
-        if len(outputs) != self.nout:
-            raise ValueError("invalid number of outputs")
+        inputs = [np.asanyarray(input_) for input_ in inputs]
+        if any(output is None for output in outputs):
+            shape = np.broadcast(*inputs).shape
+            dtype = np.common_type(*inputs)
+            outputs = [(np.zeros(shape, dtype) if output is None else output)
+                       for output in outputs]
 
         if self.ntmp > 0:
-            print("have temporaties", self.ufuncs)
-            temporaries = tuple(np.zeros_like(outputs[0])
-                                for i in range(self.ntmp))
+            temporaries = [np.zeros_like(outputs[0])
+                           for i in range(self.ntmp)]
         else:
-            temporaries = ()
+            temporaries = []
 
-        arrays = list(args) + list(outputs) + list(temporaries)
+        arrays = inputs + outputs + temporaries
         for ufunc, input_map, output_map in zip(self.ufuncs, self.input_maps,
                                                 self.output_maps):
-            ufunc_in = tuple(arrays[i] for i in input_map)
-            ufunc_out = tuple(arrays[i] for i in output_map)
-            ufunc_res = ufunc(*ufunc_in, out=ufunc_out)
-            # mostly for mapping, put result back in arrays.
-            if not isinstance(ufunc_res, tuple):
-                ufunc_res = (ufunc_res,)
-            for i, res in zip(output_map, ufunc_res):
-                arrays[i] = res
-            print(arrays)
+            ufunc_inout = [arrays[i] for i in input_map + output_map]
+            # As we work in-place, result is not needed.
+            ufunc(*ufunc_inout)
 
         outputs = arrays[self.nin:self.nin+self.nout]
 
-        return outputs[0] if len(outputs) == 1 else outputs
+        return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
     def __or__(self, other):
         return self.from_links([self, other])
