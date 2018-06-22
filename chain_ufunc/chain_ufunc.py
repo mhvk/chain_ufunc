@@ -118,22 +118,6 @@ class ChainedUfunc(object):
             all_maps[name] = new_maps
         return all_maps
 
-    def __and__(self, other):
-        if not isinstance(other, ChainedUfunc):
-            return NotImplemented
-
-        # first adjust the input and output maps for self
-        self_maps = self._adjusted_maps(0, other.nin, other.nin + other.nout)
-        other_maps = other._adjusted_maps(self.nin, self.nin + self.nout,
-                                          self.nin + self.nout)
-
-        return type(self)(self.ufuncs + other.ufuncs,
-                          self_maps['input_maps'] + other_maps['input_maps'],
-                          self_maps['output_maps'] + other_maps['output_maps'],
-                          self.nin + other.nin, self.nout + other.nout,
-                          max(self.ntmp, other.ntmp),
-                          self.names + other.names)
-
     @classmethod
     def from_ufunc(cls, ufunc):
         """Wrap a ufunc as a ChainedUfunc.
@@ -319,7 +303,7 @@ class WrappedUfunc(object):
         Ufunc to wrap
     """
     def __init__(self, ufunc, outsel=None):
-        self.ufunc = ufunc
+        self.ufunc = ChainedUfunc.from_ufunc(ufunc)
         if outsel and ufunc.nout == 1:
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
@@ -335,6 +319,25 @@ class WrappedUfunc(object):
         """
         output = self.ufunc(*args, **kwargs)
         return output[self.outsel] if self.outsel else output
+
+    def __and__(self, other):
+        if not isinstance(other, WrappedUfunc):
+            return NotImplemented
+
+        s_uf = self.ufunc
+        o_uf = other.ufunc
+        # first adjust the input and output maps for self
+        s_uf_maps = s_uf._adjusted_maps(0, o_uf.nin, o_uf.nin + o_uf.nout)
+        o_uf_maps = o_uf._adjusted_maps(s_uf.nin, s_uf.nin + s_uf.nout,
+                                        s_uf.nin + s_uf.nout)
+
+        return self.__class__(s_uf.__class__(
+            s_uf.ufuncs + o_uf.ufuncs,
+            s_uf_maps['input_maps'] + o_uf_maps['input_maps'],
+            s_uf_maps['output_maps'] + o_uf_maps['output_maps'],
+            s_uf.nin + o_uf.nin, s_uf.nout + o_uf.nout,
+            max(s_uf.ntmp, o_uf.ntmp),
+            s_uf.names + o_uf.names))
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
@@ -355,9 +358,10 @@ class WrappedUfunc(object):
             combined_input = self.ufunc
         else:
             # combine inputs
-            combined_input = inputs[0].ufunc
+            combined_input = inputs[0]
             for input_ in inputs[1:]:
-                combined_input &= input_.ufunc
+                combined_input &= input_
+            combined_input = combined_input.ufunc
 
         new_ufunc = ChainedUfunc.from_links([combined_input, ufunc])
         return self.__class__(new_ufunc)
