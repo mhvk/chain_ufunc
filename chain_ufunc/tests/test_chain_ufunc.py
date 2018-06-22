@@ -1,6 +1,5 @@
-import pytest
 import numpy as np
-from ..chain_ufunc import Input, Mapping
+from ..chain_ufunc import Input
 
 
 class TestSimple:
@@ -60,13 +59,6 @@ class TestIndexing:
         assert (np.all(tst[0] == np.modf(self.in1)[0]) and
                 np.all(tst[1] == np.modf(self.in1)[1]))
 
-    def test_mapping(self):
-        mapping = Mapping([1, 0])
-        modfmap = mapping(*np.modf(Input()))
-        tst = modfmap(self.in1)
-        assert (np.all(tst[0] == np.modf(self.in1)[1]) and
-                np.all(tst[1] == np.modf(self.in1)[0]))
-
 
 class TestIdentities:
     def test_chain_order_independence(self):
@@ -74,12 +66,3 @@ class TestIdentities:
         mulsinarcsin = np.arcsin(np.sin(np.multiply(Input(), Input())))
         mulsinarcsin2 = np.arcsin(mulsin)
         assert mulsinarcsin == mulsinarcsin2
-
-
-class TestDigraph:
-    pytest.importorskip('graphviz')
-
-    def test_digraph_creation(self, tmpdir):
-        muladd = np.add(Input(), np.multiply(Input(), Input()))
-        digraph = muladd.digraph()
-        digraph.render(str(tmpdir.join('digraph.gv')))

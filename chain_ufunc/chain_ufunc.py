@@ -1,7 +1,7 @@
 import numpy as np
 
 
-__all__ = ['ChainedUfunc', 'Mapping', 'GetItem', 'Input']
+__all__ = ['ChainedUfunc', 'WrappedUfunc', 'Input']
 
 
 class ChainedUfunc(object):
@@ -85,22 +85,6 @@ class ChainedUfunc(object):
 
         return outputs[0] if len(outputs) == 1 else outputs
 
-    def _can_handle(self, ufunc, method, *inputs, **kwargs):
-        can_handle = ('out' not in kwargs and method == '__call__' and
-                      all(isinstance(a, ChainedUfunc) for a in inputs))
-        return can_handle
-
-    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        if not self._can_handle(ufunc, method, *inputs, **kwargs):
-            return NotImplemented
-
-        # combine inputs
-        combined_input = inputs[0]
-        for input_ in inputs[1:]:
-            combined_input &= input_
-
-        return self.from_links([combined_input, ufunc])
-
     def __or__(self, other):
         return self.from_links([self, other])
 
@@ -162,8 +146,19 @@ class ChainedUfunc(object):
 
     @classmethod
     def from_ufunc(cls, ufunc):
+        """Wrap a ufunc as a ChainedUfunc.
+
+        Parameters
+        ----------
+        ufunc : ufunc-like
+            If already a ChainedUfunc, the instance will be returned directly.
+        """
+        if isinstance(ufunc, cls):
+            return ufunc
+
         if not isinstance(ufunc, np.ufunc):
             raise TypeError("ufunc should be an 'np.ufunc' instance.")
+
         input_map = list(range(ufunc.nin))
         output_map = list(range(ufunc.nin, ufunc.nargs))
         return cls([ufunc], [input_map], [output_map],
@@ -241,11 +236,6 @@ class ChainedUfunc(object):
 
         # Update in-place.
         self.__init__(ufuncs, input_maps, output_maps, nin, nout, ntmp, names)
-
-    def __getitem__(self, item):
-        result = self.copy()
-        result.append(GetItem(item, self.nout))
-        return result
 
     def __repr__(self):
         return ("ChainedUfunc(ufuncs={ufuncs}, "
@@ -330,129 +320,84 @@ class ChainedUfunc(object):
         return dg
 
 
-class Mapping(ChainedUfunc):
-    """Map inputs to outputs.
+class WrappedUfunc(object):
+    """Wraps a ufunc so it can be used to construct chains.
 
     Parameters
     ----------
-    mapping : list of int
-        Remapped outputs
-    nin : number of inputs, optional
-        By default, equal to the number of mapped items.
+    ufunc : ufunc-like (`~numpy.ufunc` or `ChainedUfunc`)
+        Ufunc to wrap
     """
-    def __init__(self, mapping=[0], nin=None, names=None):
-        nout = len(mapping)
-        if nin is None:
-            nin = nout
-        self.mapping = mapping
-        super(Mapping, self).__init__([self], [list(range(nin))],
-                                      [list(range(nin, nin+nout))],
-                                      nin, nout, 0, names=names)
-
-    def copy(self):
-        return self.__class__(self.mapping, self.nin)
-
-    def __call__(self, *inputs, **kwargs):
-        for input_ in inputs:
-            if isinstance(input_, ChainedUfunc):
-                result = input_.__array_ufunc__(self, '__call__',
-                                                *inputs, **kwargs)
-                if result is NotImplemented:
-                    raise TypeError("mapping not implemented for these types.")
-                else:
-                    return result
-
-        outputs = tuple(inputs[r] for r in self.mapping)
-        return outputs[0] if len(outputs) == 1 else outputs
-
-    def __or__(self, other):
-        if isinstance(other, np.ufunc):
-            other = ChainedUfunc.from_ufunc(other)
-        elif isinstance(other, ChainedUfunc):
-            other = other.copy()
-        else:
-            return NotImplemented
-
-        if self.nout != other.nin:
-            raise TypeError('cannot or with chain with non-matching nin')
-
-        other.input_maps[0] = self.input_maps[0]
-        return other
-
-    def __and__(self, other):
-        if not isinstance(other, Mapping) and type(other) is ChainedUfunc:
-            return super(Mapping, self).__and__(other)
-
-        return type(self)(self.mapping +
-                          [i + self.nin for i in other.mapping],
-                          names=self.names + other.names)
-
-    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        # we're a mapping, and should turn the ufunc that called us
-        # into a chainable version.
-        if not self._can_handle(ufunc, method, *inputs, **kwargs):
-            print(ufunc, method, inputs, kwargs)
-            return NotImplemented
-
-        if not all(isinstance(a, Mapping) for a in inputs):
-            print('not all Mapping')
-            return NotImplemented
-
-        # combine inputs
-        combined_input = inputs[0]
-        for input_ in inputs[1:]:
-            combined_input &= input_
-
-        result = ChainedUfunc.from_ufunc(ufunc)
-        result.input_maps[0] = combined_input.mapping
-        return result
+    def __init__(self, ufunc, outsel=None):
+        self.ufunc = ufunc
+        if outsel and ufunc.nout == 1:
+            raise IndexError("scalar ufunc does not support indexing.")
+        self.outsel = outsel
 
     def __eq__(self, other):
         return (type(self) is type(other) and
-                self.mapping == other.mapping)
+                self.__dict__ == other.__dict__)
 
-    def append(self, other):
-        if not isinstance(other, GetItem):
-            raise TypeError("can only append GetItem.")
-        if self.mapping != list(range(self.nin)):
-            raise NotImplementedError("only support inputs")
+    def __call__(self, *args, **kwargs):
+        """Evaluate the ufunc.
 
-        new_map = self.mapping[other.item]
-        if not isinstance(new_map, list):
-            new_map = [new_map]
+        All inputs should be in args, an output can be given in kwargs.
+        """
+        output = self.ufunc(*args, **kwargs)
+        return output[self.outsel] if self.outsel else output
 
-        self.mapping = new_map
-        self.nout = len(new_map)
+    def _can_handle(self, ufunc, method, *inputs, **kwargs):
+        can_handle = ('out' not in kwargs and method == '__call__' and
+                      all(isinstance(a, WrappedUfunc) for a in inputs))
+        return can_handle
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        if not self._can_handle(ufunc, method, *inputs, **kwargs):
+            return NotImplemented
+
+        if any(a.outsel for a in inputs):
+            if not all(a.ufunc is self.ufunc for a in inputs):
+                raise NotImplementedError("different selections on ufuncs")
+
+            if [a.outsel for a in inputs] != list(range(self.ufunc.nout)):
+                raise NotImplementedError("not all outputs")
+
+            combined_input = self.ufunc
+        else:
+            # combine inputs
+            combined_input = inputs[0].ufunc
+            for input_ in inputs[1:]:
+                combined_input &= input_.ufunc
+
+        new_ufunc = ChainedUfunc.from_links([combined_input, ufunc])
+        return self.__class__(new_ufunc)
+
+    def __getitem__(self, item):
+        if self.ufunc.nout == 1:
+            raise IndexError("scalar ufunc does not support indexing.")
+
+        try:
+            list(range(self.ufunc.nout))[item]
+        except IndexError:
+            raise IndexError("index out of range.")
+
+        return self.__class__(self.ufunc, item)
 
     def __repr__(self):
-        return ("Mapping({0}, {1}, names={2})"
-                .format(self.mapping, self.nin, self.names))
+        return "WrappedUfunc({})".format(self.ufunc)
+
+    def digraph(self):
+        return self.ufunc.digraph()
 
 
-class GetItem(Mapping):
-    def __init__(self, item, nin):
-        self.item = item
-        input_map = list(range(nin))[item]
-        if not isinstance(input_map, list):
-            input_map = [input_map]
-        super(GetItem, self).__init__(input_map, nin)
-
-    def copy(self):
-        return self.__class__(self.item, self.nin)
-
-
-class Input:
-    nin = 1
-    nout = 1
-    nargs = 2
-
+class Input(object):
     def __init__(self, name=None):
         self.name = name
         self.names = [name]
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
-                      all(isinstance(a, (Input, ChainedUfunc))
+                      all(isinstance(a, (Input, WrappedUfunc))
                           for a in inputs))
         return can_handle
 
@@ -465,14 +410,13 @@ class Input:
 
         if not all(isinstance(a, Input) for a in inputs):
             if ufunc.nin > 2:
-                print('>2 inputs, with some not Input')
-                return NotImplemented
-            if any(a.nout > 1 for a in inputs):
-                print('>1 output for some input')
-                return NotImplemented
+                raise NotImplementedError('>2 inputs, with some not Input')
 
             self_first = self is inputs[0]
-            result = (inputs[1] if self_first else inputs[0]).copy()
+            result = inputs[self_first].ufunc
+            if result.nout > 1:
+                print('>1 output for non-Input input')
+                return NotImplemented
             result.append(ufunc)
             if self_first:
                 input_maps = result._adjusted_maps(
@@ -484,15 +428,16 @@ class Input:
                 result.names[0] = self.name
             else:
                 result.names[result.nin - 1] = self.name
-            return result
 
-        result = ChainedUfunc.from_ufunc(ufunc)
+        else:
+            result = ChainedUfunc.from_ufunc(ufunc)
 
-        names = [a.name for a in inputs]
-        if len(names) - names.count(None) != len(set(names) - {None}):
-            print("duplicate names")
+            names = [a.name for a in inputs]
+            if len(names) - names.count(None) != len(set(names) - {None}):
+                print("duplicate names")
 
-        # combine inputs
-        result.input_maps[0] = list(range(ufunc.nin))
-        result.names = names
-        return result
+                # combine inputs
+                result.input_maps[0] = list(range(ufunc.nin))
+                result.names = names
+
+        return WrappedUfunc(result)
