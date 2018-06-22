@@ -491,9 +491,8 @@ class Input:
         names = [a.name for a in inputs]
         if len(names) - names.count(None) != len(set(names) - {None}):
             print("duplicate names")
-        # combine inputs
-        combined_input = Mapping(list(range(ufunc.nin)), names=names)
 
-        result.input_maps[0] = combined_input.mapping
-        result.names = combined_input.names
+        # combine inputs
+        result.input_maps[0] = list(range(ufunc.nin))
+        result.names = names
         return result
