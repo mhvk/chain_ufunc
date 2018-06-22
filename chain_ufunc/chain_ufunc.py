@@ -122,21 +122,6 @@ class ChainedUfunc(object):
         if not isinstance(other, ChainedUfunc):
             return NotImplemented
 
-        # check if both are just different parts of the same ChainedUfunc
-        if (isinstance(self.ufuncs[-1], GetItem) and
-            isinstance(other.ufuncs[-1], GetItem) and
-            (self.ufuncs[-1].nout + other.ufuncs[-1].nout ==
-             self.ufuncs[-1].nin and
-             self.ufuncs[-1].mapping + other.ufuncs[-1].mapping ==
-             list(range(self.ufuncs[-1].nin))) and
-            (self.ufuncs[:-1] == other.ufuncs[:-1] and
-             self.input_maps[:-1] == other.input_maps[:-1] and
-             self.output_maps[:-1] == other.output_maps[:-1])):
-            # the two add up to a complete map, which can just be removed.
-            return type(self)(self.ufuncs[:-1], self.input_maps[:-1],
-                              self.output_maps[:-1], self.nin,
-                              self.ufuncs[-1].nin, self.ntmp)
-
         # first adjust the input and output maps for self
         self_maps = self._adjusted_maps(0, other.nin, other.nin + other.nout)
         other_maps = other._adjusted_maps(self.nin, self.nin + self.nout,

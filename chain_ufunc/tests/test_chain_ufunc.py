@@ -19,6 +19,13 @@ class TestSimple:
         assert np.allclose(tst, np.arcsin(np.sin(self.degrees *
                                                  self.deg2rad)))
 
+    def test_function_of_two_functions(self):
+        sincosarctan2 = np.arctan2(np.sin(Input()), np.cos(Input()))
+        angles = self.degrees * self.deg2rad
+        tst = sincosarctan2(angles, angles)
+        chck = np.arctan2(np.sin(angles), np.cos(angles))
+        assert np.allclose(tst, chck)
+
     def test_two_outputs(self):
         addmodf = np.modf(np.add(Input(), Input()))
         in1 = np.array([1.5, 2.])
