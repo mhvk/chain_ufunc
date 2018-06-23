@@ -1,7 +1,7 @@
 import numpy as np
 
 
-__all__ = ['ChainedUfunc', 'WrappedUfunc', 'Input']
+__all__ = ['ChainedUfunc', 'WrappedUfunc', 'Input', 'Output']
 
 
 class ChainedUfunc(object):
@@ -169,13 +169,18 @@ class WrappedUfunc(object):
         self_maps = self._adjusted_maps(0, other.nin, other.nin + other.nout)
         other_maps = other._adjusted_maps(self.nin, self.nin + self.nout,
                                           self.nin + self.nout)
-
+        names = (self.names[:self.nin] +
+                 other.names[:other.nin] +
+                 self.names[self.nin:self.nargs] +
+                 other.names[other.nin:other.nargs] +
+                 self.names[self.nargs:] +
+                 other.names[other.nargs:])
         return self.__class__(ChainedUfunc(
             self.ufuncs + other.ufuncs,
             self_maps + other_maps,
             self.nin + other.nin, self.nout + other.nout,
             max(self.ntmp, other.ntmp),
-            self.names + other.names))
+            names))
 
     def __or__(self, other):
         if isinstance(other, (ChainedUfunc, np.ufunc)):
@@ -227,8 +232,11 @@ class WrappedUfunc(object):
                    other.nout + other.ntmp - nout, 0)
         names = (self.names[:self.nin] +
                  other.names[self.nout:self.nout + extra_nin] +
-                 self.names[self.nin:self.nargs - n_other_in_from_self_out] +
-                 other.names[other.nin:other.nargs] +
+                 [(other.names[i]
+                   if other.names[i] else
+                   self.names[self.nin + i])
+                  for i in range(self.nout)] +
+                 other.names[other.nin + n_other_in_from_self_out:other.nargs] +
                  self.names[self.nargs:] +
                  other.names[other.nargs:other.nargs + other.ntmp - self.ntmp])
 
@@ -344,12 +352,14 @@ class WrappedUfunc(object):
         return dg
 
 
-class Input(object):
+class InOut(object):
     def __init__(self, name=None):
         self.name = name
         self.names = [name]
 
-    def _can_handle(self, ufunc, method, *inputs, **kwargs):
+
+class Input(InOut):
+    def _can_handle(self, method, *inputs, **kwargs):
         can_handle = (method == '__call__' and
                       all(isinstance(a, (Input, WrappedUfunc))
                           for a in inputs) and
@@ -359,28 +369,28 @@ class Input(object):
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         # we're a mapping, and should turn the ufunc that called us
         # into a chainable version.
-        if not self._can_handle(ufunc, method, *inputs, **kwargs):
-            print(ufunc, method, inputs, kwargs)
+        if not self._can_handle(method, *inputs, **kwargs):
             return NotImplemented
 
         if not all(isinstance(a, Input) for a in inputs):
             if ufunc.nin > 2:
                 raise NotImplementedError('>2 inputs, with some not Input')
 
-            self_first = self is inputs[0]
-            result = inputs[self_first]
+            input_first = isinstance(inputs[0], Input)
+            result = inputs[input_first]
+            input_ = inputs[1-input_first]
             if result.ufunc.nout > 1:
                 print('>1 output for non-Input input')
                 return NotImplemented
             result |= ufunc
-            if self_first:
+            if input_first:
                 op_maps = result._adjusted_maps(1, 0, 0)
                 op_maps[-1][ufunc.nin-1] = 0
                 result.ufunc.op_maps[:] = op_maps
-                result.names[:result.nin] = ([self.name] +
+                result.names[:result.nin] = ([input_.name] +
                                              result.names[:result.nin-1])
             else:
-                result.names[result.ufunc.nin - 1] = self.name
+                result.names[result.ufunc.nin - 1] = input_.name
 
         else:
             result = WrappedUfunc(ufunc)
@@ -392,4 +402,31 @@ class Input(object):
             # combine inputs
             result.ufunc.names[:ufunc.nin] = names
 
+        return result
+
+
+class Output(InOut):
+    def _can_handle(self, method, *inputs, **kwargs):
+        can_handle = (method == '__call__' and
+                      all(isinstance(a, (Input, WrappedUfunc))
+                          for a in inputs) and
+                      'out' in kwargs and
+                      all(a is None or isinstance(a, Output)
+                          for a in kwargs['out']))
+        return can_handle
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        # we're a mapping, and should turn the ufunc that called us
+        # into a chainable version.
+        if not self._can_handle(method, *inputs, **kwargs):
+            return NotImplemented
+
+        outputs = kwargs.pop('out')
+        result = getattr(ufunc, method)(*inputs, **kwargs)
+
+        # For now, only copy names
+        for iout, output in zip(result.op_maps[-1][ufunc.nin:],
+                                outputs):
+            if output is not None:
+                result.names[iout] = output.name
         return result
