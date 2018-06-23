@@ -11,23 +11,18 @@ class ChainedUfunc(object):
     ----------
     ufuncs : list of ufuc
         Ufuncs to calculate, in order.
-    input_maps : list of list
-        For each ufunc, indices of where to get its inputs.  Up to
-        nin, these point to actual inputs, then the outputs, and then
-        any temporary arrays.
-    output_maps: list of list
-        For each ufunc, where to store the outputs.  Same numbering as
-        for the input maps, but can be output or temporary only.
+    op_maps : list of list of int
+        For each ufunc, indices of where to get its inputs and put its
+        outputs.  The indices to the chained ufuncs nin point to actual
+        inputs, those beyond to first outputs, and then any temporaries.
     nin, nout, ntmp : int
         total number of inputs, outputs and temporary arrays
     names : list of str, optional
         Input argument names ("in<i>" by default).
     """
-    def __init__(self, ufuncs, input_maps, output_maps, nin, nout, ntmp,
-                 names=None):
+    def __init__(self, ufuncs, op_maps, nin, nout, ntmp, names=None):
         self.ufuncs = ufuncs
-        self.input_maps = input_maps
-        self.output_maps = output_maps
+        self.op_maps = op_maps
         self.nin = nin
         self.nout = nout
         self.ntmp = ntmp
@@ -80,9 +75,8 @@ class ChainedUfunc(object):
             temporaries = []
 
         arrays = inputs + outputs + temporaries
-        for ufunc, input_map, output_map in zip(self.ufuncs, self.input_maps,
-                                                self.output_maps):
-            ufunc_inout = [arrays[i] for i in input_map + output_map]
+        for ufunc, op_map in zip(self.ufuncs, self.op_maps):
+            ufunc_inout = [arrays[i] for i in op_map]
             # As we work in-place, result is not needed.
             ufunc(*ufunc_inout)
 
@@ -92,15 +86,13 @@ class ChainedUfunc(object):
 
     def __repr__(self):
         return ("ChainedUfunc(ufuncs={ufuncs}, "
-                "input_maps={input_maps}, "
-                "output_maps={output_maps}, "
+                "op_maps={op_maps}, "
                 "nin={nin}, "
                 "nout={nout}, "
                 "ntmp={ntmp}, "
                 "names={names})").format(
                     ufuncs=self.ufuncs,
-                    input_maps=self.input_maps,
-                    output_maps=self.output_maps,
+                    op_maps=self.op_maps,
                     nin=self.nin,
                     nout=self.nout,
                     ntmp=self.ntmp,
@@ -117,10 +109,8 @@ class WrappedUfunc(object):
     """
     def __init__(self, ufunc, outsel=None):
         if isinstance(ufunc, np.ufunc):
-            input_map = list(range(ufunc.nin))
-            output_map = list(range(ufunc.nin, ufunc.nargs))
-            ufunc = ChainedUfunc([ufunc], [input_map], [output_map],
-                                 ufunc.nin, ufunc.nout, 0)
+            op_map = list(range(ufunc.nargs))
+            ufunc = ChainedUfunc([ufunc], [op_map], ufunc.nin, ufunc.nout, 0)
         elif not isinstance(ufunc, ChainedUfunc):
             raise TypeError("can only wrap ufuncs")
 
@@ -130,8 +120,7 @@ class WrappedUfunc(object):
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
 
-        for attr in ('ufuncs', 'nin', 'nout', 'ntmp',
-                     'input_maps', 'output_maps', 'names'):
+        for attr in ('ufuncs', 'nin', 'nout', 'ntmp', 'op_maps', 'names'):
             setattr(self, attr, getattr(self.ufunc, attr))
 
     def __eq__(self, other):
@@ -146,30 +135,26 @@ class WrappedUfunc(object):
         output = self.ufunc(*args, **kwargs)
         return output[self.outsel] if self.outsel else output
 
-    def _adjusted_maps(self, off_in, off_out, off_tmp,
-                       map_names=('input_maps', 'output_maps')):
+    def _adjusted_maps(self, off_in, off_out, off_tmp):
         if off_in == 0 and off_out == 0 and (off_tmp == 0 or self.ntmp == 0):
-            return {name: getattr(self, name)[:] for name in map_names}
+            return self.op_maps
 
         nin = self.nin
         ninplusout = nin + self.nout
-        all_maps = {}
-        for name in map_names:
-            old_maps = getattr(self, name)
-            new_maps = []
-            for old_map in old_maps:
-                new_map = []
-                for i in old_map:
-                    if i < nin:
-                        i += off_in
-                    elif i < ninplusout:
-                        i += off_out
-                    else:
-                        i += off_tmp
-                    new_map.append(i)
-                new_maps.append(new_map)
-            all_maps[name] = new_maps
-        return all_maps
+        old_maps = self.op_maps
+        new_maps = []
+        for old_map in old_maps:
+            new_map = []
+            for i in old_map:
+                if i < nin:
+                    i += off_in
+                elif i < ninplusout:
+                    i += off_out
+                else:
+                    i += off_tmp
+                new_map.append(i)
+            new_maps.append(new_map)
+        return new_maps
 
     def __and__(self, other):
         if not isinstance(other, WrappedUfunc):
@@ -182,8 +167,7 @@ class WrappedUfunc(object):
 
         return self.__class__(ChainedUfunc(
             self.ufuncs + other.ufuncs,
-            self_maps['input_maps'] + other_maps['input_maps'],
-            self_maps['output_maps'] + other_maps['output_maps'],
+            self_maps + other_maps,
             self.nin + other.nin, self.nout + other.nout,
             max(self.ntmp, other.ntmp),
             self.names + other.names))
@@ -204,8 +188,10 @@ class WrappedUfunc(object):
         n_other_in_from_self_out = min(other.nin, self.nout)
         # For now, these inputs are only allowed at the start of other
         # (need to assign a temporary for them otherwise)
-        for other_input_map in other.input_maps[1:]:
-            if any(i < n_other_in_from_self_out for i in other_input_map):
+        for other_op_map, other_ufunc in zip(other.op_maps[1:],
+                                             other.ufuncs[1:]):
+            if any(i < n_other_in_from_self_out
+                   for i in other_op_map[:other_ufunc.nin]):
                 raise NotImplementedError(
                     "Cannot yet append chain in which an input does not "
                     "immediately use the outputs.")
@@ -218,29 +204,27 @@ class WrappedUfunc(object):
         # For the maps before the appending, we just need to add offsets
         # so that any new inputs can be accomodated. Note that some outputs
         # may become temporaries or vice versa; that's OK.
-        self_maps = self._adjusted_maps(0, extra_nin, extra_nin)
+        self_op_maps = self._adjusted_maps(0, extra_nin, extra_nin)
 
         # Now see how the number of outputs changes relative to other.
         nout = other.nout + max(self.nout - other.nin, 0)
-        other_maps = other._adjusted_maps(0, nin - other.nin,
-                                          nin - other.nin + nout - other.nout)
+        other_op_maps = other._adjusted_maps(
+            0, nin - other.nin, nin - other.nin + nout - other.nout)
         # finally change where other gets its inputs.
-        other_input_maps = ([[other_input_remap[i]
-                              for i in other_maps['input_maps'][0]]] +
-                            other_maps['input_maps'][1:])
+        ou0_nin = other.ufuncs[0].nin
+        other_op_maps[0] = ([other_input_remap[i]
+                             for i in other_op_maps[0][:ou0_nin]] +
+                            other_op_maps[0][ou0_nin:])
 
-        # Set up for in-place update
         ufuncs = self.ufuncs + other.ufuncs
-        input_maps = self_maps['input_maps'] + other_input_maps
-        output_maps = self_maps['output_maps'] + other_maps['output_maps']
+        op_maps = self_op_maps + other_op_maps
         ntmp = max(self.nout + self.ntmp - nout,
                    other.nout + other.ntmp - nout, 0)
         names = self.names
         if extra_nin:
             names += other.names[self.nout:]
 
-        return cls(ChainedUfunc(ufuncs, input_maps, output_maps,
-                                nin, nout, ntmp, names))
+        return cls(ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, names))
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
@@ -321,8 +305,8 @@ class WrappedUfunc(object):
         # Link inputs to node0.
         for i in range(self.nin):
             dg.edge('in{}'.format(i), array(0, i))
-        for iu, (ufunc, input_map, output_map) in enumerate(
-                zip(self.ufuncs, self.input_maps, self.output_maps)):
+        for iu, (ufunc, op_map) in enumerate(
+                zip(self.ufuncs, self.op_maps)):
 
             # ensure array holders are aligned
             dg.edge(array(iu, 0), array(iu+1, 0), style='invis')
@@ -333,14 +317,14 @@ class WrappedUfunc(object):
                     extra = dict()
                 else:
                     extra = dict(headlabel=str(i))
-                dg.edge(array(iu, input_map[i]), name, **extra)
+                dg.edge(array(iu, op_map[i]), name, **extra)
             # connect ufunc outputs to next array.
             for i in range(ufunc.nout):
                 if ufunc.nout == 1:
                     extra = dict()
                 else:
                     extra = dict(taillabel=str(i))
-                dg.edge(name, array(iu+1, output_map[i]), **extra)
+                dg.edge(name, array(iu+1, op_map[ufunc.nin+i]), **extra)
         # finally, connect last array to outputs.
         for i in range(self.nout):
             dg.edge(array(len(self.ufuncs), self.nin + i),
@@ -378,10 +362,9 @@ class Input(object):
                 return NotImplemented
             result |= ufunc
             if self_first:
-                input_maps = result._adjusted_maps(
-                    1, 0, 0, map_names=('input_maps',))['input_maps']
-                input_maps[-1][-1] = 0
-                result.ufunc.input_maps = input_maps
+                op_maps = result._adjusted_maps(1, 0, 0)
+                op_maps[-1][ufunc.nin-1] = 0
+                result.ufunc.op_maps[:] = op_maps
                 result.names[:] = [self.name] + result.names[:result.nin]
             else:
                 result.names[result.ufunc.nin - 1] = self.name
