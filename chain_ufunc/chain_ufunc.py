@@ -115,10 +115,7 @@ class WrappedUfunc(object):
         Ufunc to wrap
     """
     def __init__(self, ufunc, outsel=None):
-        if isinstance(ufunc, np.ufunc):
-            op_map = list(range(ufunc.nargs))
-            ufunc = ChainedUfunc([ufunc], [op_map], ufunc.nin, ufunc.nout, 0)
-        elif not isinstance(ufunc, ChainedUfunc):
+        if not isinstance(ufunc, (np.ufunc, ChainedUfunc)):
             raise TypeError("can only wrap ufuncs")
 
         self.ufunc = ufunc
@@ -126,24 +123,59 @@ class WrappedUfunc(object):
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
 
-        for attr in ('ufuncs', 'nin', 'nout', 'nargs', 'ntmp',
-                     'op_maps', 'names', '__name__'):
-            setattr(self, attr, getattr(self.ufunc, attr))
-        self._set_doc()
+        doc = self.__doc__ = ufunc.__doc__
+        if 'Implements:\n\n    >>> def ' in doc:
+            (self.ufuncs, self.op_maps,
+             self.nin, self.nout, self.ntmp, self.names,
+             self.__name__) = self._parse_doc(doc)
+        else:
+            if isinstance(ufunc, ChainedUfunc):
+                raise TypeError("ChainedUfunc with bad doc: {}"
+                                .format(ufunc.__doc__))
+            self.ufuncs = [ufunc]
+            self.op_maps = [list(range(ufunc.nargs))]
+            self.nin, self.nout = ufunc.nin, ufunc.nout
+            self.ntmp = 0
+            self.names = [None] * ufunc.nargs
+            self.__name__ = ufunc.__name__
+        self.nargs = self.nin + self.nout
 
-    def _set_doc(self):
-        names = [self._arg_name(i) for i in range(self.nargs+self.ntmp)]
-        inputs = ', '.join(names[:self.nin])
-        outputs = ', '.join(names[self.nin:self.nargs])
+    @staticmethod
+    def _arg_name(names, i, nin, nout):
+        name = names[i]
+        if name is None:
+            if i < nin:
+                name = 'in{}'.format(i)
+            elif i < nin + nout:
+                name = 'out{}'.format(i-nin)
+            else:
+                name = 'tmp{}'.format(i-nin-nout)
+        return name
+
+    @property
+    def arg_names(self):
+        return [self._arg_name(self.names, i, self.nin, self.nout)
+                for i in range(self.nargs+self.ntmp)]
+
+    @classmethod
+    def _create_doc(cls, chained_ufunc):
+        nin = chained_ufunc.nin
+        nout = chained_ufunc.nout
+        ntmp = chained_ufunc.ntmp
+        nargs = nin + nout
+        names = [cls._arg_name(chained_ufunc.names, i, nin, nout)
+                 for i in range(nargs+ntmp)]
+        inputs = ', '.join(names[:nin])
+        outputs = ', '.join(names[nin:nargs])
         doc0 = ("{name}({inputs}[, {outputs}, / [, out=({nones})]"
                 ", *, where=True, casting='same_kind', order='K', "
                 "dtype=None, subok=True[, signature, extobj])"
-                .format(name=self.ufunc.__name__,
+                .format(name=chained_ufunc.__name__,
                         inputs=inputs, outputs=outputs,
-                        nones=('None,' if self.nout == 1 else
-                               ', '.join(['None'] * self.nout))))
+                        nones=('None,' if nout == 1 else
+                               ', '.join(['None'] * nout))))
         ufuncs = []
-        for uf, op_map in zip(self.ufuncs, self.op_maps):
+        for uf, op_map in zip(chained_ufunc.ufuncs, chained_ufunc.op_maps):
             uf_in = [names[op_map[i]] for i in range(uf.nin)]
             uf_out = [names[op_map[i]] for i in range(uf.nin, uf.nargs)]
             ufuncs.append("{}({}, out={})"
@@ -155,15 +187,14 @@ class WrappedUfunc(object):
                       "...     # Temporaries: {temporaries}\n"
                       "...     {ufuncs}\n"
                       "...     return {outputs}"
-                      .format(name=self.ufunc.__name__,
+                      .format(name=chained_ufunc.__name__,
                               inputs=inputs,
-                              temporaries=', '.join(names[self.nargs:]),
+                              temporaries=', '.join(names[nargs:]),
                               ufuncs="\n...     ".join(ufuncs),
                               outputs=outputs))
 
-        doc = ("{}\n\nImplements:\n\n{}"
-               .format(doc0, textwrap.indent(implements, "    ")))
-        self.__doc__ = self.ufunc.__doc__ = doc
+        return ("{}\n\nImplements:\n\n{}"
+                .format(doc0, textwrap.indent(implements, "    ")))
 
     def _parse_doc(self, doc):
         prefix, code = doc.split("Implements:\n\n    >>> def ")
@@ -171,6 +202,8 @@ class WrappedUfunc(object):
         name, inputs = lines[0].replace('):', '').split('(')
         inputs = inputs.split(', ')
         temporaries = lines[1].split('Temporaries: ')[1].split(', ')
+        if len(temporaries) == 1 and temporaries[0] == '':
+            temporaries = []
         outputs = lines[-1].split('return ')[1].split(', ')
         names = inputs + outputs + temporaries
         nin = len(inputs)
@@ -181,13 +214,17 @@ class WrappedUfunc(object):
 
         for line in lines[2:-1]:
             ufunc, args = line.replace(')', '').split('(')
-            print(ufunc, args)
             ufuncs.append(getattr(np, ufunc))
             ins, outs = args.split(', out=')
             outs.replace('(', '').replace(')', '')
             args = ins.split(', ') + outs.split(', ')
             op_maps.append([names.index(arg) for arg in args])
 
+        allnone = [None] * (nin + nout + ntmp)
+        placeholders = [self._arg_name(allnone, i, nin, nout)
+                        for i in range(nin + nout + ntmp)]
+        names = [name if name != placeholder else None
+                 for (name, placeholder) in zip(names, placeholders)]
         return ufuncs, op_maps, nin, nout, ntmp, names, name
 
     def __eq__(self, other):
@@ -223,6 +260,12 @@ class WrappedUfunc(object):
             new_maps.append(new_map)
         return new_maps
 
+    @classmethod
+    def from_chain(cls, *args, **kwargs):
+        ufunc = ChainedUfunc(*args, **kwargs)
+        ufunc.__doc__ = cls._create_doc(ufunc)
+        return cls(ufunc)
+
     def __and__(self, other):
         if not isinstance(other, WrappedUfunc):
             return NotImplemented
@@ -237,12 +280,12 @@ class WrappedUfunc(object):
                  other.names[other.nin:other.nargs] +
                  self.names[self.nargs:] +
                  other.names[other.nargs:])
-        return self.__class__(ChainedUfunc(
-            self.ufuncs + other.ufuncs,
-            self_maps + other_maps,
-            self.nin + other.nin, self.nout + other.nout,
-            max(self.ntmp, other.ntmp),
-            names))
+        return self.from_chain(self.ufuncs + other.ufuncs,
+                               self_maps + other_maps,
+                               self.nin + other.nin,
+                               self.nout + other.nout,
+                               max(self.ntmp, other.ntmp),
+                               names)
 
     def __or__(self, other):
         if isinstance(other, (ChainedUfunc, np.ufunc)):
@@ -250,7 +293,6 @@ class WrappedUfunc(object):
         elif not isinstance(other, WrappedUfunc):
             return NotImplemented
 
-        cls = type(self)
         # First determine whether our outputs suffice for inputs;
         # if not, we need new inputs, and thus have to rearrange our maps.
         extra_nin = max(other.nin - self.nout, 0)
@@ -301,7 +343,7 @@ class WrappedUfunc(object):
                  self.names[self.nargs:] +
                  other.names[other.nargs:other.nargs + other.ntmp - self.ntmp])
 
-        return cls(ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, names))
+        return self.from_chain(ufuncs, op_maps, nin, nout, ntmp, names)
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
@@ -341,34 +383,25 @@ class WrappedUfunc(object):
         return self.__class__(self.ufunc, item)
 
     def __repr__(self):
-        return "WrappedUfunc({})".format(self.ufunc)
-
-    def _arg_name(self, i):
-        name = self.names[i]
-        if name is None:
-            if i < self.nin:
-                name = 'in{}'.format(i)
-            elif i < self.nin + self.nout:
-                name = 'out{}'.format(i-self.nin)
-            else:
-                name = 'tmp{}'.format(i-self.nargs)
-        return name
+        return ("WrappedUfunc({}{})"
+                .format(self.ufunc,
+                        ', {}'.format(self.outsel) if self.outsel else ''))
 
     def graph(self):
         from graphviz import Digraph
-
+        arg_names = self.arg_names
         dg_in = Digraph('in', node_attr=dict(shape='point', rank='min'))
         for i in range(self.nin):
-            dg_in.node(self._arg_name(i))
+            dg_in.node(arg_names[i])
         dg_out = Digraph('out', node_attr=dict(shape='point', rank='max'))
         for i in range(self.nout):
-            dg_out.node(self._arg_name(self.nin + i))
+            dg_out.node(arg_names[self.nin + i])
 
         dg = Digraph(graph_attr=dict(rankdir='LR'))
         dg.subgraph(dg_in)
         dg.subgraph(dg_out)
         array_label = ' | '.join(
-            ['<{name}> {name}'.format(name=self._arg_name(i))
+            ['<{name}> {name}'.format(name=arg_names[i])
              for i in range(self.nargs+self.ntmp)])
         dg_arrays = Digraph('arrays', node_attr=dict(
             shape='record', group='arrays', label=array_label))
@@ -379,19 +412,19 @@ class WrappedUfunc(object):
         # Link inputs to node0.
         node_port = "node{}:{}".format
         for i in range(self.nin):
-            arg_name = self._arg_name(i)
+            arg_name = arg_names[i]
             dg.edge(arg_name, node_port(0, arg_name))
         for iu, (ufunc, op_map) in enumerate(
                 zip(self.ufuncs, self.op_maps)):
 
             # ensure array holders are aligned
-            arg_name = self._arg_name(0)
-            dg.edge(node_port(iu, arg_name), node_port(iu+1, arg_name),
+            dg.edge(node_port(iu, arg_names[0]),
+                    node_port(iu+1, arg_names[0]),
                     style='invis')
             # connect arrays to ufunc inputs.
             name = ufunc.__name__
             for i in range(ufunc.nin):
-                arg_name = self._arg_name(op_map[i])
+                arg_name = arg_names[op_map[i]]
                 if ufunc.nin == 1:
                     extra = dict()
                 else:
@@ -399,15 +432,15 @@ class WrappedUfunc(object):
                 dg.edge(node_port(iu, arg_name), name, **extra)
             # connect ufunc outputs to next array.
             for i in range(ufunc.nout):
-                arg_name = self._arg_name(op_map[ufunc.nin+i])
+                arg_name = arg_names[op_map[ufunc.nin+i]]
                 if ufunc.nout == 1:
                     extra = dict()
                 else:
                     extra = dict(taillabel=str(i))
                 dg.edge(name, node_port(iu+1, arg_name), **extra)
         # finally, connect last array to outputs.
-        for i in range(self.nout):
-            arg_name = self._arg_name(self.nin+i)
+        for i in range(self.nin, self.nargs):
+            arg_name = arg_names[i]
             dg.edge(node_port(len(self.ufuncs), arg_name), arg_name)
 
         return dg
@@ -441,27 +474,29 @@ class Input(InOut):
             result = inputs[input_first]
             input_ = inputs[1-input_first]
             if result.ufunc.nout > 1:
-                print('>1 output for non-Input input')
-                return NotImplemented
+                raise NotImplementedError('>1 output for non-Input input')
+
             result |= ufunc
+            names = result.names
             if input_first:
                 op_maps = result._adjusted_maps(1, 0, 0)
                 op_maps[-1][ufunc.nin-1] = 0
-                result.ufunc.op_maps[:] = op_maps
-                result.names[:result.nin] = ([input_.name] +
-                                             result.names[:result.nin-1])
+                names[:result.nin] = ([input_.name] +
+                                      result.names[:result.nin-1])
             else:
-                result.names[result.ufunc.nin - 1] = input_.name
+                op_maps = result.op_maps
+                names[result.ufunc.nin - 1] = input_.name
 
         else:
             result = WrappedUfunc(ufunc)
-
-            names = [a.name for a in inputs]
+            op_maps = result.op_maps
+            names = [a.name for a in inputs] + result.names[ufunc.nin:]
             if len(names) - names.count(None) != len(set(names) - {None}):
-                print("duplicate names")
+                raise NotImplementedError("duplicate names")
 
-            # combine inputs
-            result.ufunc.names[:ufunc.nin] = names
+        result = result.from_chain(result.ufuncs, op_maps,
+                                   result.nin, result.nout,
+                                   result.ntmp, names, result.__name__)
 
         return result
 
@@ -485,9 +520,14 @@ class Output(InOut):
         outputs = kwargs.pop('out')
         result = getattr(ufunc, method)(*inputs, **kwargs)
 
+        names = result.names
         # For now, only copy names
         for iout, output in zip(result.op_maps[-1][ufunc.nin:],
                                 outputs):
             if output is not None:
-                result.names[iout] = output.name
+                names[iout] = output.name
+        if names != result.names:
+            result = result.from_chain(result.ufuncs, result.op_maps,
+                                       result.nin, result.nout, result.ntmp,
+                                       names, result.__name__)
         return result
