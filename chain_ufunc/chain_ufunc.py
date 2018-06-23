@@ -106,72 +106,6 @@ class ChainedUfunc(object):
                     ntmp=self.ntmp,
                     names=self.names)
 
-    def digraph(self):
-        from graphviz import Digraph
-
-        dg_in = Digraph('in', node_attr=dict(shape='point', rank='min'))
-        for i in range(self.nin):
-            dg_in.node('in{}'.format(i))
-        dg_out = Digraph('out', node_attr=dict(shape='point', rank='max'))
-        for i in range(self.nout):
-            dg_out.node('out{}'.format(i))
-
-        dg = Digraph(graph_attr=dict(rankdir='LR'))
-        dg.subgraph(dg_in)
-        dg.subgraph(dg_out)
-        array_label = ' | '.join(
-            ['<{t}{i}> {t}{i}'.format(t=t, i=i)
-             for n, t in ((self.nin, 'in'),
-                          (self.nout, 'out'),
-                          (self.ntmp, 'tmp'))
-             for i in range(n)])
-        dg_arrays = Digraph('arrays', node_attr=dict(
-            shape='record', group='arrays', label=array_label))
-        for iu in range(len(self.ufuncs) + 1):
-            dg_arrays.node('node{}'.format(iu))
-        dg.subgraph(dg_arrays)
-
-        def array(iu, i):
-            if i < self.nin:
-                inout = 'in'
-            elif i < self.nin + self.nout:
-                inout = 'out'
-                i -= self.nin
-            else:
-                inout = 'tmp'
-                i -= self.nin + self.nout
-            return 'node{}:{}{}'.format(iu, inout, i)
-
-        # Link inputs to node0.
-        for i in range(self.nin):
-            dg.edge('in{}'.format(i), array(0, i))
-        for iu, (ufunc, input_map, output_map) in enumerate(
-                zip(self.ufuncs, self.input_maps, self.output_maps)):
-
-            # ensure array holders are aligned
-            dg.edge(array(iu, 0), array(iu+1, 0), style='invis')
-            # connect arrays to ufunc inputs.
-            name = ufunc.__name__
-            for i in range(ufunc.nin):
-                if ufunc.nin == 1:
-                    extra = dict()
-                else:
-                    extra = dict(headlabel=str(i))
-                dg.edge(array(iu, input_map[i]), name, **extra)
-            # connect ufunc outputs to next array.
-            for i in range(ufunc.nout):
-                if ufunc.nout == 1:
-                    extra = dict()
-                else:
-                    extra = dict(taillabel=str(i))
-                dg.edge(name, array(iu+1, output_map[i]), **extra)
-        # finally, connect last array to outputs.
-        for i in range(self.nout):
-            dg.edge(array(len(self.ufuncs), self.nin + i),
-                    'out{}'.format(i))
-
-        return dg
-
 
 class WrappedUfunc(object):
     """Wraps a ufunc so it can be used to construct chains.
@@ -348,8 +282,71 @@ class WrappedUfunc(object):
     def __repr__(self):
         return "WrappedUfunc({})".format(self.ufunc)
 
-    def digraph(self):
-        return self.ufunc.digraph()
+    def graph(self):
+        from graphviz import Digraph
+
+        dg_in = Digraph('in', node_attr=dict(shape='point', rank='min'))
+        for i in range(self.nin):
+            dg_in.node('in{}'.format(i))
+        dg_out = Digraph('out', node_attr=dict(shape='point', rank='max'))
+        for i in range(self.nout):
+            dg_out.node('out{}'.format(i))
+
+        dg = Digraph(graph_attr=dict(rankdir='LR'))
+        dg.subgraph(dg_in)
+        dg.subgraph(dg_out)
+        array_label = ' | '.join(
+            ['<{t}{i}> {t}{i}'.format(t=t, i=i)
+             for n, t in ((self.nin, 'in'),
+                          (self.nout, 'out'),
+                          (self.ntmp, 'tmp'))
+             for i in range(n)])
+        dg_arrays = Digraph('arrays', node_attr=dict(
+            shape='record', group='arrays', label=array_label))
+        for iu in range(len(self.ufuncs) + 1):
+            dg_arrays.node('node{}'.format(iu))
+        dg.subgraph(dg_arrays)
+
+        def array(iu, i):
+            if i < self.nin:
+                inout = 'in'
+            elif i < self.nin + self.nout:
+                inout = 'out'
+                i -= self.nin
+            else:
+                inout = 'tmp'
+                i -= self.nin + self.nout
+            return 'node{}:{}{}'.format(iu, inout, i)
+
+        # Link inputs to node0.
+        for i in range(self.nin):
+            dg.edge('in{}'.format(i), array(0, i))
+        for iu, (ufunc, input_map, output_map) in enumerate(
+                zip(self.ufuncs, self.input_maps, self.output_maps)):
+
+            # ensure array holders are aligned
+            dg.edge(array(iu, 0), array(iu+1, 0), style='invis')
+            # connect arrays to ufunc inputs.
+            name = ufunc.__name__
+            for i in range(ufunc.nin):
+                if ufunc.nin == 1:
+                    extra = dict()
+                else:
+                    extra = dict(headlabel=str(i))
+                dg.edge(array(iu, input_map[i]), name, **extra)
+            # connect ufunc outputs to next array.
+            for i in range(ufunc.nout):
+                if ufunc.nout == 1:
+                    extra = dict()
+                else:
+                    extra = dict(taillabel=str(i))
+                dg.edge(name, array(iu+1, output_map[i]), **extra)
+        # finally, connect last array to outputs.
+        for i in range(self.nout):
+            dg.edge(array(len(self.ufuncs), self.nin + i),
+                    'out{}'.format(i))
+
+        return dg
 
 
 class Input(object):
