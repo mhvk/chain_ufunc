@@ -91,12 +91,12 @@ class ChainedUfunc(object):
         if all(name is None for name in self.names):
             names = ""
         else:
-            names = "names={}".format(self.names)
+            names = ", names={}".format(self.names)
         return ("ChainedUfunc(ufuncs={ufuncs}, "
                 "op_maps={op_maps}, "
                 "nin={nin}, "
                 "nout={nout}, "
-                "ntmp={ntmp}, "
+                "ntmp={ntmp}"
                 "{names})").format(
                     ufuncs=self.ufuncs,
                     op_maps=self.op_maps,
@@ -234,6 +234,14 @@ class WrappedUfunc(object):
         names = [name if name != placeholder else None
                  for (name, placeholder) in zip(names, placeholders)]
         return ufuncs, op_maps, nin, nout, ntmp, names, name
+
+    @classmethod
+    def from_doc(cls, doc):
+        args = cls._parse_doc(doc)
+        chained_ufunc = ChainedUfunc(*args)
+        new_doc = cls._create_doc(chained_ufunc)
+        chained_ufunc.__doc__ = new_doc
+        return cls(chained_ufunc)
 
     def __eq__(self, other):
         return (type(self) is type(other) and
