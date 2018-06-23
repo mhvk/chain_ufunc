@@ -145,11 +145,11 @@ class WrappedUfunc(object):
         name = names[i]
         if name is None:
             if i < nin:
-                name = 'in{}'.format(i)
+                name = '_i{}'.format(i)
             elif i < nin + nout:
-                name = 'out{}'.format(i-nin)
+                name = '_o{}'.format(i-nin)
             else:
-                name = 'tmp{}'.format(i-nin-nout)
+                name = '_t{}'.format(i-nin-nout)
         return name
 
     @property
@@ -174,37 +174,45 @@ class WrappedUfunc(object):
                         inputs=inputs, outputs=outputs,
                         nones=('None,' if nout == 1 else
                                ', '.join(['None'] * nout))))
-        ufuncs = []
+        code_lines = ["{name}({inputs}):"
+                      .format(name=chained_ufunc.__name__,
+                              inputs=inputs)]
+        if ntmp:
+            code_lines.append('# Temporaries: {temporaries}'
+                              .format(temporaries=', '.join(names[nargs:])))
         for uf, op_map in zip(chained_ufunc.ufuncs, chained_ufunc.op_maps):
             uf_in = [names[op_map[i]] for i in range(uf.nin)]
             uf_out = [names[op_map[i]] for i in range(uf.nin, uf.nargs)]
-            ufuncs.append("{}({}, out={})"
-                          .format(uf.__name__,
-                                  ', '.join(uf_in),
-                                  (uf_out[0] if uf.nout == 1 else
-                                   ', '.join(uf_out))))
-        implements = (">>> def {name}({inputs}):\n"
-                      "...     # Temporaries: {temporaries}\n"
-                      "...     {ufuncs}\n"
-                      "...     return {outputs}"
-                      .format(name=chained_ufunc.__name__,
-                              inputs=inputs,
-                              temporaries=', '.join(names[nargs:]),
-                              ufuncs="\n...     ".join(ufuncs),
-                              outputs=outputs))
+            code_lines.append("{}({}, out={})"
+                              .format(uf.__name__,
+                                      ', '.join(uf_in),
+                                      (uf_out[0] if uf.nout == 1 else
+                                       ', '.join(uf_out))))
+        code_lines.append('return {outputs}'.format(outputs=outputs))
+        implements = ">>> def {}\n".format("\n...     ".join(code_lines))
 
         return ("{}\n\nImplements:\n\n{}"
                 .format(doc0, textwrap.indent(implements, "    ")))
 
     def _parse_doc(self, doc):
-        prefix, code = doc.split("Implements:\n\n    >>> def ")
-        lines = code.split('\n    ...     ')
-        name, inputs = lines[0].replace('):', '').split('(')
+        code = doc.split("Implements:\n\n    >>> ")
+        if len(code) == 2:
+            code = code[1]
+
+        lines = [line.replace('...', '').strip() for line in code.split('\n')]
+        while lines and 'return' not in lines[-1]:
+            lines = lines[:-1]
+        name, inputs = (lines[0].split('def ')[1].replace('):', '')
+                        .split('('))
         inputs = inputs.split(', ')
-        temporaries = lines[1].split('Temporaries: ')[1].split(', ')
-        if len(temporaries) == 1 and temporaries[0] == '':
+        outputs = lines[-1].split('return ')[1].strip().split(', ')
+        temporaries = lines[1].split('Temporaries: ')
+        if len(temporaries) == 1:
             temporaries = []
-        outputs = lines[-1].split('return ')[1].split(', ')
+            code_lines = lines[1:-1]
+        else:
+            temporaries = temporaries[1].split(', ')
+            code_lines = lines[2:-1]
         names = inputs + outputs + temporaries
         nin = len(inputs)
         nout = len(outputs)
@@ -212,7 +220,7 @@ class WrappedUfunc(object):
         op_maps = []
         ufuncs = []
 
-        for line in lines[2:-1]:
+        for line in code_lines:
             ufunc, args = line.replace(')', '').split('(')
             ufuncs.append(getattr(np, ufunc))
             ins, outs = args.split(', out=')
