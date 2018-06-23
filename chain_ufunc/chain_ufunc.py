@@ -18,7 +18,7 @@ class ChainedUfunc(object):
     nin, nout, ntmp : int
         total number of inputs, outputs and temporary arrays
     names : list of str, optional
-        Input argument names ("in<i>" by default).
+        Argument names ("(in|out|tmp)<i>" by default).
     """
     def __init__(self, ufuncs, op_maps, nin, nout, ntmp, names=None):
         self.ufuncs = ufuncs
@@ -29,7 +29,7 @@ class ChainedUfunc(object):
         self.nargs = nin+nout
         # should have something for different types.
         if names is None:
-            names = [None] * nin
+            names = [None] * (nin + nout + ntmp)
         self.names = names
 
     def __eq__(self, other):
@@ -85,18 +85,22 @@ class ChainedUfunc(object):
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
     def __repr__(self):
+        if all(name is None for name in self.names):
+            names = ""
+        else:
+            names = "names={}".format(self.names)
         return ("ChainedUfunc(ufuncs={ufuncs}, "
                 "op_maps={op_maps}, "
                 "nin={nin}, "
                 "nout={nout}, "
                 "ntmp={ntmp}, "
-                "names={names})").format(
+                "{names})").format(
                     ufuncs=self.ufuncs,
                     op_maps=self.op_maps,
                     nin=self.nin,
                     nout=self.nout,
                     ntmp=self.ntmp,
-                    names=self.names)
+                    names=names)
 
 
 class WrappedUfunc(object):
@@ -120,7 +124,8 @@ class WrappedUfunc(object):
             raise IndexError("scalar ufunc does not support indexing.")
         self.outsel = outsel
 
-        for attr in ('ufuncs', 'nin', 'nout', 'ntmp', 'op_maps', 'names'):
+        for attr in ('ufuncs', 'nin', 'nout', 'nargs', 'ntmp',
+                     'op_maps', 'names'):
             setattr(self, attr, getattr(self.ufunc, attr))
 
     def __eq__(self, other):
@@ -220,9 +225,12 @@ class WrappedUfunc(object):
         op_maps = self_op_maps + other_op_maps
         ntmp = max(self.nout + self.ntmp - nout,
                    other.nout + other.ntmp - nout, 0)
-        names = self.names
-        if extra_nin:
-            names += other.names[self.nout:]
+        names = (self.names[:self.nin] +
+                 other.names[self.nout:self.nout + extra_nin] +
+                 self.names[self.nin:self.nargs - n_other_in_from_self_out] +
+                 other.names[other.nin:other.nargs] +
+                 self.names[self.nargs:] +
+                 other.names[other.nargs:other.nargs + other.ntmp - self.ntmp])
 
         return cls(ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, names))
 
@@ -266,69 +274,72 @@ class WrappedUfunc(object):
     def __repr__(self):
         return "WrappedUfunc({})".format(self.ufunc)
 
+    def _arg_name(self, i):
+        name = self.names[i]
+        if name is None:
+            if i < self.nin:
+                name = 'in{}'.format(i)
+            elif i < self.nin + self.nout:
+                name = 'out{}'.format(i-self.nin)
+            else:
+                name = 'tmp{}'.format(i-self.nargs)
+        return name
+
     def graph(self):
         from graphviz import Digraph
 
         dg_in = Digraph('in', node_attr=dict(shape='point', rank='min'))
         for i in range(self.nin):
-            dg_in.node('in{}'.format(i))
+            dg_in.node(self._arg_name(i))
         dg_out = Digraph('out', node_attr=dict(shape='point', rank='max'))
         for i in range(self.nout):
-            dg_out.node('out{}'.format(i))
+            dg_out.node(self._arg_name(self.nin + i))
 
         dg = Digraph(graph_attr=dict(rankdir='LR'))
         dg.subgraph(dg_in)
         dg.subgraph(dg_out)
         array_label = ' | '.join(
-            ['<{t}{i}> {t}{i}'.format(t=t, i=i)
-             for n, t in ((self.nin, 'in'),
-                          (self.nout, 'out'),
-                          (self.ntmp, 'tmp'))
-             for i in range(n)])
+            ['<{name}> {name}'.format(name=self._arg_name(i))
+             for i in range(self.nargs+self.ntmp)])
         dg_arrays = Digraph('arrays', node_attr=dict(
             shape='record', group='arrays', label=array_label))
         for iu in range(len(self.ufuncs) + 1):
             dg_arrays.node('node{}'.format(iu))
         dg.subgraph(dg_arrays)
 
-        def array(iu, i):
-            if i < self.nin:
-                inout = 'in'
-            elif i < self.nin + self.nout:
-                inout = 'out'
-                i -= self.nin
-            else:
-                inout = 'tmp'
-                i -= self.nin + self.nout
-            return 'node{}:{}{}'.format(iu, inout, i)
-
         # Link inputs to node0.
+        node_port = "node{}:{}".format
         for i in range(self.nin):
-            dg.edge('in{}'.format(i), array(0, i))
+            arg_name = self._arg_name(i)
+            dg.edge(arg_name, node_port(0, arg_name))
         for iu, (ufunc, op_map) in enumerate(
                 zip(self.ufuncs, self.op_maps)):
 
             # ensure array holders are aligned
-            dg.edge(array(iu, 0), array(iu+1, 0), style='invis')
+            arg_name = self._arg_name(0)
+            dg.edge(node_port(iu, arg_name), node_port(iu+1, arg_name),
+                    style='invis')
             # connect arrays to ufunc inputs.
             name = ufunc.__name__
             for i in range(ufunc.nin):
+                arg_name = self._arg_name(op_map[i])
                 if ufunc.nin == 1:
                     extra = dict()
                 else:
                     extra = dict(headlabel=str(i))
-                dg.edge(array(iu, op_map[i]), name, **extra)
+                dg.edge(node_port(iu, arg_name), name, **extra)
             # connect ufunc outputs to next array.
             for i in range(ufunc.nout):
+                arg_name = self._arg_name(op_map[ufunc.nin+i])
                 if ufunc.nout == 1:
                     extra = dict()
                 else:
                     extra = dict(taillabel=str(i))
-                dg.edge(name, array(iu+1, op_map[ufunc.nin+i]), **extra)
+                dg.edge(name, node_port(iu+1, arg_name), **extra)
         # finally, connect last array to outputs.
         for i in range(self.nout):
-            dg.edge(array(len(self.ufuncs), self.nin + i),
-                    'out{}'.format(i))
+            arg_name = self._arg_name(self.nin+i)
+            dg.edge(node_port(len(self.ufuncs), arg_name), arg_name)
 
         return dg
 
@@ -339,9 +350,10 @@ class Input(object):
         self.names = [name]
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
-        can_handle = ('out' not in kwargs and method == '__call__' and
+        can_handle = (method == '__call__' and
                       all(isinstance(a, (Input, WrappedUfunc))
-                          for a in inputs))
+                          for a in inputs) and
+                      'out' not in kwargs)
         return can_handle
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
@@ -365,11 +377,10 @@ class Input(object):
                 op_maps = result._adjusted_maps(1, 0, 0)
                 op_maps[-1][ufunc.nin-1] = 0
                 result.ufunc.op_maps[:] = op_maps
-                result.names[:] = [self.name] + result.names[:result.nin]
+                result.names[:result.nin] = ([self.name] +
+                                             result.names[:result.nin-1])
             else:
                 result.names[result.ufunc.nin - 1] = self.name
-
-            return result
 
         else:
             result = WrappedUfunc(ufunc)
@@ -379,5 +390,6 @@ class Input(object):
                 print("duplicate names")
 
             # combine inputs
-            result.ufunc.names = names
-            return result
+            result.ufunc.names[:ufunc.nin] = names
+
+        return result
