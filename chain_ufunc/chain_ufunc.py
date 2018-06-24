@@ -26,7 +26,7 @@ class ChainedUfunc(object):
         Name of the chained ufunc.
     """
     def __init__(self, ufuncs, op_maps, nin, nout, ntmp,
-                 name='ufunc_chain'):
+                 name='ufunc_chain', doc=None):
         self.ufuncs = ufuncs
         self.op_maps = op_maps
         self.nin = nin
@@ -35,6 +35,8 @@ class ChainedUfunc(object):
         self.nargs = nin+nout
         # should have something for different types.
         self.__name__ = name
+        if doc is not None:
+            self.__doc__ = doc
 
     def __eq__(self, other):
         return (type(other) is type(self) and
@@ -153,10 +155,7 @@ class WrappedUfunc(object):
                 for i in range(self.nargs+self.ntmp)]
 
     @classmethod
-    def _create_doc(cls, chained_ufunc, names=None):
-        nin = chained_ufunc.nin
-        nout = chained_ufunc.nout
-        ntmp = chained_ufunc.ntmp
+    def _create_doc(cls, ufuncs, op_maps, nin, nout, ntmp, name, names=None):
         nargs = nin + nout
         if names is None:
             names = [None] * (nargs + ntmp)
@@ -167,17 +166,15 @@ class WrappedUfunc(object):
         doc0 = ("{name}({inputs}[, {outputs}, / [, out=({nones})]"
                 ", *, where=True, casting='same_kind', order='K', "
                 "dtype=None, subok=True[, signature, extobj])"
-                .format(name=chained_ufunc.__name__,
+                .format(name=name,
                         inputs=inputs, outputs=outputs,
                         nones=('None,' if nout == 1 else
                                ', '.join(['None'] * nout))))
-        code_lines = ["{name}({inputs}):"
-                      .format(name=chained_ufunc.__name__,
-                              inputs=inputs)]
+        code_lines = ["{name}({inputs}):".format(name=name, inputs=inputs)]
         if ntmp:
             code_lines.append('# Temporaries: {temporaries}'
                               .format(temporaries=', '.join(names[nargs:])))
-        for uf, op_map in zip(chained_ufunc.ufuncs, chained_ufunc.op_maps):
+        for uf, op_map in zip(ufuncs, op_maps):
             uf_in = [names[op_map[i]] for i in range(uf.nin)]
             uf_out = [names[op_map[i]] for i in range(uf.nin, uf.nargs)]
             code_lines.append("{}({}, out={})"
@@ -235,9 +232,8 @@ class WrappedUfunc(object):
     @classmethod
     def from_doc(cls, doc):
         args = cls._parse_doc(doc)
-        chained_ufunc = ChainedUfunc(*args[:-1])
-        new_doc = cls._create_doc(chained_ufunc, args[-1])
-        chained_ufunc.__doc__ = new_doc
+        new_doc = cls._create_doc(*args)
+        chained_ufunc = ChainedUfunc(*args[:-1], new_doc)
         return cls(chained_ufunc)
 
     def __eq__(self, other):
@@ -276,8 +272,8 @@ class WrappedUfunc(object):
     @classmethod
     def from_chain(cls, ufuncs, op_maps, nin, nout, ntmp,
                    name=None, names=None):
-        ufunc = ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, name)
-        ufunc.__doc__ = cls._create_doc(ufunc, names)
+        doc = cls._create_doc(ufuncs, op_maps, nin, nout, ntmp, name, names)
+        ufunc = ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, name, doc)
         return cls(ufunc)
 
     def __and__(self, other):
