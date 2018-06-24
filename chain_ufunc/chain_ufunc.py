@@ -146,6 +146,48 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
     return ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, name, doc)
 
 
+def parse_doc(doc):
+    code = doc.split("Implements:\n\n    >>> ")
+    if len(code) == 2:
+        code = code[1]
+
+    lines = [line.replace('...', '').strip() for line in code.split('\n')]
+    while lines and 'return' not in lines[-1]:
+        lines = lines[:-1]
+    name, inputs = (lines[0].split('def ')[1].replace('):', '')
+                    .split('('))
+    inputs = inputs.split(', ')
+    outputs = lines[-1].split('return ')[1].strip().split(', ')
+    temporaries = lines[1].split('Temporaries: ')
+    if len(temporaries) == 1:
+        temporaries = []
+        code_lines = lines[1:-1]
+    else:
+        temporaries = temporaries[1].split(', ')
+        code_lines = lines[2:-1]
+    names = inputs + outputs + temporaries
+    nin = len(inputs)
+    nout = len(outputs)
+    ntmp = len(temporaries)
+    op_maps = []
+    ufuncs = []
+
+    for line in code_lines:
+        ufunc, args = line.replace(')', '').split('(')
+        ufuncs.append(getattr(np, ufunc))
+        ins, outs = args.split(', out=')
+        outs.replace('(', '').replace(')', '')
+        args = ins.split(', ') + outs.split(', ')
+        op_maps.append([names.index(arg) for arg in args])
+
+    allnone = [None] * (nin + nout + ntmp)
+    placeholders = [arg_name(allnone, i, nin, nout)
+                    for i in range(nin + nout + ntmp)]
+    names = [name if name != placeholder else None
+             for (name, placeholder) in zip(names, placeholders)]
+    return ufuncs, op_maps, nin, nout, ntmp, name, names
+
+
 class WrappedUfunc(object):
     """Wraps a ufunc so it can be used to construct chains.
 
@@ -167,7 +209,7 @@ class WrappedUfunc(object):
         if 'Implements:\n\n    >>> def ' in doc:
             (self.ufuncs, self.op_maps,
              self.nin, self.nout, self.ntmp, self.__name__,
-             self.names) = self._parse_doc(doc)
+             self.names) = parse_doc(doc)
         else:
             if isinstance(ufunc, ChainedUfunc):
                 raise TypeError("ChainedUfunc with bad doc: {}"
@@ -184,47 +226,6 @@ class WrappedUfunc(object):
     def arg_names(self):
         return [arg_name(self.names, i, self.nin, self.nout)
                 for i in range(self.nargs+self.ntmp)]
-
-    def _parse_doc(self, doc):
-        code = doc.split("Implements:\n\n    >>> ")
-        if len(code) == 2:
-            code = code[1]
-
-        lines = [line.replace('...', '').strip() for line in code.split('\n')]
-        while lines and 'return' not in lines[-1]:
-            lines = lines[:-1]
-        name, inputs = (lines[0].split('def ')[1].replace('):', '')
-                        .split('('))
-        inputs = inputs.split(', ')
-        outputs = lines[-1].split('return ')[1].strip().split(', ')
-        temporaries = lines[1].split('Temporaries: ')
-        if len(temporaries) == 1:
-            temporaries = []
-            code_lines = lines[1:-1]
-        else:
-            temporaries = temporaries[1].split(', ')
-            code_lines = lines[2:-1]
-        names = inputs + outputs + temporaries
-        nin = len(inputs)
-        nout = len(outputs)
-        ntmp = len(temporaries)
-        op_maps = []
-        ufuncs = []
-
-        for line in code_lines:
-            ufunc, args = line.replace(')', '').split('(')
-            ufuncs.append(getattr(np, ufunc))
-            ins, outs = args.split(', out=')
-            outs.replace('(', '').replace(')', '')
-            args = ins.split(', ') + outs.split(', ')
-            op_maps.append([names.index(arg) for arg in args])
-
-        allnone = [None] * (nin + nout + ntmp)
-        placeholders = [arg_name(allnone, i, nin, nout)
-                        for i in range(nin + nout + ntmp)]
-        names = [name if name != placeholder else None
-                 for (name, placeholder) in zip(names, placeholders)]
-        return ufuncs, op_maps, nin, nout, ntmp, name, names
 
     def __eq__(self, other):
         return (type(self) is type(other) and
@@ -268,7 +269,7 @@ class WrappedUfunc(object):
 
     @classmethod
     def from_doc(cls, doc):
-        return cls.from_chain(*cls._parse_doc(doc))
+        return cls.from_chain(*parse_doc(doc))
 
     def __and__(self, other):
         if not isinstance(other, WrappedUfunc):
