@@ -1,5 +1,5 @@
 import numpy as np
-from ..chain_ufunc import ChainedUfunc
+from .. import ChainedUfunc
 
 
 class TestSimple:

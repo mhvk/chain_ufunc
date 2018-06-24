@@ -4,6 +4,10 @@ import numpy as np
 
 __all__ = ['ChainedUfunc', 'WrappedUfunc', 'Input', 'Output']
 
+# TODO: split into two files, one with base class which
+# only executes and a creator function/class, the other
+# with the wrapping functions.
+
 
 class ChainedUfunc(object):
     """A chain of ufuncs that are evaluated in turn.
