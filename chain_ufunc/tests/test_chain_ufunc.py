@@ -1,5 +1,5 @@
 import numpy as np
-from .. import ChainedUfunc, create_chained_ufunc
+from .. import ChainedUfunc, create_chained_ufunc, create_from_doc
 
 
 class TestSimple:
@@ -36,3 +36,19 @@ class TestSimple:
         tst = addmodf(in1, in2)
         chck = np.modf(np.add(in1, in2))
         assert np.all(tst[0] == chck[0]) and np.all(tst[1] == chck[1])
+
+
+class TestCreateFromDoc:
+    """
+    def chain(a, b, c):
+        multiply(a, b, out=d)
+        add(d, c, out=d)
+        return d
+    """
+    def test_cls_doc(self):
+        muladd = create_from_doc(self.__class__.__doc__)
+        assert type(muladd) is ChainedUfunc
+        in1 = np.array([1.5, 2.])
+        in2 = np.array([0.1, -0.1])
+        tst = muladd(in1, in2, 3.)
+        assert np.all(tst == (in1 * in2) + 3.)

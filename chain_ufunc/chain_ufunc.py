@@ -2,7 +2,7 @@ import textwrap
 import numpy as np
 
 
-__all__ = ['ChainedUfunc', 'create_chained_ufunc',
+__all__ = ['ChainedUfunc', 'create_chained_ufunc', 'create_from_doc',
            'WrappedUfunc', 'Input', 'Output']
 
 
@@ -147,11 +147,11 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
 
 
 def parse_doc(doc):
-    code = doc.split("Implements:\n\n    >>> ")
-    if len(code) == 2:
-        code = code[1]
+    code = doc.split("Implements:\n\n    >>> ")[-1]
 
     lines = [line.replace('...', '').strip() for line in code.split('\n')]
+    while lines and 'def' not in lines[0]:
+        lines = lines[1:]
     while lines and 'return' not in lines[-1]:
         lines = lines[:-1]
     name, inputs = (lines[0].split('def ')[1].replace('):', '')
@@ -186,6 +186,10 @@ def parse_doc(doc):
     names = [name if name != placeholder else None
              for (name, placeholder) in zip(names, placeholders)]
     return ufuncs, op_maps, nin, nout, ntmp, name, names
+
+
+def create_from_doc(doc):
+    return create_chained_ufunc(*parse_doc(doc))
 
 
 class WrappedUfunc(object):
@@ -266,10 +270,6 @@ class WrappedUfunc(object):
         ufunc = create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
                                      name, names)
         return cls(ufunc)
-
-    @classmethod
-    def from_doc(cls, doc):
-        return cls.from_chain(*parse_doc(doc))
 
     def __and__(self, other):
         if not isinstance(other, WrappedUfunc):
