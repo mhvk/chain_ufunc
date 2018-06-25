@@ -14,6 +14,9 @@
 #include "numpy/npy_3kcompat.h"
 
 typedef struct {
+    int nin;
+    int nout;
+    int ntmp;
     int nufunc;
     int *nop;
     PyUFuncGenericFunction *functions;
@@ -26,20 +29,40 @@ static void
 inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 {
     int iu, iop;
+    int n=dimensions[0];
     char *ufunc_args[NPY_MAXARGS];
     npy_intp ufunc_steps[NPY_MAXARGS];
     ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
     int *index = chain_info->op_indices;
+    char *tmps=NULL;
+    int ntmp=chain_info->ntmp;
+    int ninout=chain_info->nin + chain_info->nout;
+    if (chain_info->ntmp > 0) {
+        tmps = PyArray_malloc(n * ntmp * sizeof(double));
+        if (!tmps) {
+            PyErr_NoMemory();
+            return;
+        }
+    }
     for (iu = 0; iu < chain_info->nufunc; iu++) {
         int nop = chain_info->nop[iu];
         for (iop = 0; iop < nop; iop++) {
             /* printf("iu=%d, iop=%d, *index=%d\n", iu, iop, *index); */
-            ufunc_args[iop] = args[*index];
-            ufunc_steps[iop] = steps[*index];
+            if (*index < ninout) {
+                ufunc_args[iop] = args[*index];
+                ufunc_steps[iop] = steps[*index];
+            }
+            else {
+                ufunc_args[iop] = tmps + (*index - ninout) * n * sizeof(double);
+                ufunc_steps[iop] = sizeof(double);
+            }
             index++;
         }
         chain_info->functions[iu](ufunc_args, dimensions, ufunc_steps,
                                   chain_info->data[iu]);
+    }
+    if (tmps) {
+        PyArray_free(tmps);
     }
 }
 
@@ -81,11 +104,6 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                                      &nin, &nout, &ntmp,
                                      &name, &doc)) {
         return NULL;
-    }
-    if (ntmp > 0) {
-        PyErr_SetString(PyExc_ValueError,
-                        "cannot yet deal with temporaries");
-        goto fail;
     }
     nop = nin+nout;
     nufunc = PyList_Size(ufunc_list);
@@ -161,6 +179,9 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             types[i] = NPY_DOUBLE;
         }
         functions[itype] = (PyUFuncGenericFunction)inner_loop_chain;
+        chain_info[itype].nin = nin;
+        chain_info[itype].nout = nout;
+        chain_info[itype].ntmp = ntmp;
         chain_info[itype].nufunc = nufunc;
         chain_info[itype].nop = ufunc_nop;
         chain_info[itype].functions = inner_loops + itype * nufunc;
