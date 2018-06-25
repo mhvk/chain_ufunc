@@ -92,13 +92,12 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 {
     int nin, nout, ntmp;
     PyObject *ufuncs_arg, *op_maps;
-    char *doc=NULL;
+    char *name=NULL, *doc=NULL;
     char *kw_list[] = {
         "ufuncs", "op_maps", "nin", "nout", "ntmp", "name", "doc", NULL};
     int nufunc, nmaps, nindices, ntypes;
     PyObject *ufunc_list=NULL;
-    char *name;
-    size_t name_len = -1;
+    size_t name_len=-1, doc_len=-1;
     PyUFuncObject **ufuncs;
     PyUFuncObject *chained_ufunc=NULL;
     int *op_indices=NULL;
@@ -111,9 +110,10 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     void **inner_data=NULL;
     npy_intp *chain_steps=NULL;
     char *name_copy=NULL;
+    char *doc_copy=NULL;
     static PyTypeObject *ufunc_cls=NULL;
     char *mem_ptr=NULL, *mem;
-    npy_intp mem_size, sizes[10];
+    npy_intp mem_size, sizes[11];
     int iu, itype, iop, i;
 
     if (ufunc_cls == NULL) {
@@ -127,14 +127,27 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             return NULL;
         }
     }
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOiiiss", kw_list,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOiii|ss", kw_list,
                                      &ufuncs_arg, &op_maps,
                                      &nin, &nout, &ntmp,
                                      &name, &doc)) {
         return NULL;
     }
     /* Interpret name argument */
-    name_len = strlen(name);
+    if (name) {
+        name_len = strlen(name);
+    }
+    else {
+        name = "ufunc_chain";
+        name_len = 11;
+    }
+    if (doc) {
+        doc_len = strlen(doc);
+    }
+    else {
+        doc = "";
+        doc_len = 0;
+    }
     /* Interpret ufuncs argument as list (new ref.) and get stack of ufuncs */
     ufunc_list = PySequence_Fast(ufuncs_arg,
                                  "'ufuncs' should be a sequence");
@@ -188,6 +201,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     sizes[i++] = sizeof(*data) * ntypes;
     sizes[i++] = sizeof(*chain_steps) * ntypes * ntmp;
     sizes[i++] = sizeof(*name_copy) * (name_len + 1);
+    sizes[i++] = sizeof(*doc_copy) * (doc_len + 1);
     /* This overallocates for op_indices, but it's not too much memory */
     sizes[i++] = sizeof(*op_indices) * nufunc * (nin + nout + ntmp);
     mem_size = 0;
@@ -220,9 +234,12 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     mem += sizes[i++];
     name_copy = (char *)mem;
     mem += sizes[i++];
+    doc_copy = (char *)mem;
+    mem += sizes[i++];
     op_indices = (int *)mem;
 
     strncpy(name_copy, name, name_len + 1);
+    strncpy(doc_copy, doc, doc_len + 1);
     nindices = 0;
     for (iu = 0; iu < nufunc; iu++) {
         PyObject *op_map = PyList_GetItem(op_maps, iu);
