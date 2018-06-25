@@ -47,7 +47,6 @@ class TestCreateFromDoc:
     """
     def test_cls_doc(self):
         muladd = create_from_doc(self.__class__.__doc__)
-        assert type(muladd) is ChainedUfunc
         in1 = np.array([1.5, 2.])
         in2 = np.array([0.1, -0.1])
         tst = muladd(in1, in2, 3.)

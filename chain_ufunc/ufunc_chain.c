@@ -17,6 +17,7 @@ typedef struct {
     int nufunc;
     int *nop;
     PyUFuncGenericFunction *functions;
+    void **data;
     int *op_indices;
 } ufunc_chain_info;
 
@@ -30,12 +31,15 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
     int *index = chain_info->op_indices;
     for (iu = 0; iu < chain_info->nufunc; iu++) {
-        for (iop = 0; iop < chain_info->nop[iu]; iop++) {
+        int nop = chain_info->nop[iu];
+        for (iop = 0; iop < nop; iop++) {
+            /* printf("iu=%d, iop=%d, *index=%d\n", iu, iop, *index); */
             ufunc_args[iop] = args[*index];
             ufunc_steps[iop] = steps[*index];
             index++;
         }
-        chain_info->functions[iu](ufunc_args, dimensions, ufunc_steps, NULL);
+        chain_info->functions[iu](ufunc_args, dimensions, ufunc_steps,
+                                  chain_info->data[iu]);
     }
 }
 
@@ -57,7 +61,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     char *types=NULL;
     PyUFuncGenericFunction *functions=NULL, *inner_loops=NULL;
     ufunc_chain_info *chain_info=NULL;
-    void **data=NULL;
+    void **data=NULL, **inner_data=NULL;
     static PyTypeObject *ufunc_cls=NULL;
     int iu, itype, iop, nop;
 
@@ -77,6 +81,11 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                                      &nin, &nout, &ntmp,
                                      &name, &doc)) {
         return NULL;
+    }
+    if (ntmp > 0) {
+        PyErr_SetString(PyExc_ValueError,
+                        "cannot yet deal with temporaries");
+        goto fail;
     }
     nop = nin+nout;
     nufunc = PyList_Size(ufunc_list);
@@ -101,9 +110,10 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     chain_info = PyArray_malloc(ntypes * sizeof(*chain_info));
     functions = PyArray_malloc(ntypes * sizeof(*functions));
     inner_loops = PyArray_malloc(ntypes * nufunc * sizeof(*inner_loops));
+    inner_data = PyArray_malloc(ntypes * nufunc * sizeof(*inner_data));
     data = PyArray_malloc(ntypes * sizeof(*data));
     if (ufuncs == NULL || ufunc_nop == NULL || op_indices == NULL ||
-        data == NULL || inner_loops == NULL ||
+        data == NULL || inner_loops == NULL || inner_data == NULL ||
         types == NULL || chain_info == NULL || functions == NULL) {
         PyErr_NoMemory();
         goto fail;
@@ -154,6 +164,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         chain_info[itype].nufunc = nufunc;
         chain_info[itype].nop = ufunc_nop;
         chain_info[itype].functions = inner_loops + itype * nufunc;
+        chain_info[itype].data = inner_data + itype * nufunc;
         for (iu = 0; iu < nufunc; iu++) {
             ufunc = ufuncs[iu];
             for (i = 0; i < ufunc->ntypes; i++) {
@@ -162,6 +173,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                     break;
                 }
             }
+            /* printf("iu=%d, i=%d\n", iu, i); */
             if (i == ufunc->ntypes) {
                 PyErr_Format(PyExc_ValueError,
                              "ufunc '%s' does not support DOUBLE",
@@ -169,6 +181,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                 goto fail;
             }
             chain_info[itype].functions[iu] = ufuncs[iu]->functions[i];
+            chain_info[itype].data[iu] = ufuncs[iu]->data[i];
         }
         chain_info[itype].op_indices = op_indices;
         data[itype] = (void *)(chain_info + itype);

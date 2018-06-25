@@ -1,6 +1,7 @@
 import textwrap
 import numpy as np
 
+from ufunc_chain import create as create_ufunc_chain
 
 __all__ = ['ChainedUfunc', 'create_chained_ufunc', 'create_from_doc',
            'WrappedUfunc', 'Input', 'Output']
@@ -143,7 +144,7 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
     implements = ">>> def {}\n".format("\n...     ".join(code_lines))
     doc = ("{}\n\nImplements:\n\n{}"
            .format(doc0, textwrap.indent(implements, "    ")))
-    return ChainedUfunc(ufuncs, op_maps, nin, nout, ntmp, name, doc)
+    return create_ufunc_chain(ufuncs, op_maps, nin, nout, ntmp, name, doc)
 
 
 def parse_doc(doc):
@@ -233,7 +234,8 @@ class WrappedUfunc(object):
 
     def __eq__(self, other):
         return (type(self) is type(other) and
-                self.__dict__ == other.__dict__)
+                all(v == other.__dict__[k]
+                    for k, v in self.__dict__.items() if k != 'ufunc'))
 
     def __call__(self, *args, **kwargs):
         """Evaluate the ufunc.
@@ -266,7 +268,7 @@ class WrappedUfunc(object):
 
     @classmethod
     def from_chain(cls, ufuncs, op_maps, nin, nout, ntmp,
-                   name=None, names=None):
+                   name='chained_ufunc', names=None):
         ufunc = create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
                                      name, names)
         return cls(ufunc)
