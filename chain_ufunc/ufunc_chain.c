@@ -91,13 +91,15 @@ static PyObject *
 create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 {
     int nin, nout, ntmp;
-    PyObject *ufunc_list=NULL, *op_maps=NULL;
-    char *name=NULL, *doc=NULL;
+    PyObject *ufuncs_arg, *op_maps;
+    char *doc=NULL;
     char *kw_list[] = {
         "ufuncs", "op_maps", "nin", "nout", "ntmp", "name", "doc", NULL};
     int nufunc, nmaps, nindices, ntypes;
-    PyUFuncObject **ufuncs=NULL;
-    PyUFuncObject *ufunc;
+    PyObject *ufunc_list=NULL;
+    char *name;
+    size_t name_len = -1;
+    PyUFuncObject **ufuncs;
     PyUFuncObject *chained_ufunc=NULL;
     int *op_indices=NULL;
     int *ufunc_nop=NULL;
@@ -108,6 +110,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     void **data=NULL;
     void **inner_data=NULL;
     npy_intp *chain_steps=NULL;
+    char *name_copy=NULL;
     static PyTypeObject *ufunc_cls=NULL;
     char *mem_ptr=NULL, *mem;
     npy_intp mem_size, sizes[10];
@@ -124,17 +127,24 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             return NULL;
         }
     }
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOiii|ss", kw_list,
-                                     &ufunc_list, &op_maps,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOiiiss", kw_list,
+                                     &ufuncs_arg, &op_maps,
                                      &nin, &nout, &ntmp,
                                      &name, &doc)) {
         return NULL;
     }
-    nufunc = PyList_Size(ufunc_list);
-    if (nufunc < 0) {
+    /* Interpret name argument */
+    name_len = strlen(name);
+    /* Interpret ufuncs argument as list (new ref.) and get stack of ufuncs */
+    ufunc_list = PySequence_Fast(ufuncs_arg,
+                                 "'ufuncs' should be a sequence");
+    if (ufunc_list == NULL) {
         goto fail;
     }
-    nmaps = PyList_Size(op_maps);
+    nufunc = PySequence_Fast_GET_SIZE(ufunc_list);
+    ufuncs = (PyUFuncObject **)PySequence_Fast_ITEMS(ufunc_list);
+    /* Check consistency of number of maps */
+    nmaps = PySequence_Size(op_maps);
     if (nmaps < 0) {
         goto fail;
     }
@@ -143,6 +153,30 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                         "'op_maps' must have as many entries as 'ufuncs'");
         goto fail;
     }
+    /* Further sanity checks on maps */
+    for (iu = 0; iu < nufunc; iu++) {
+        PyUFuncObject *ufunc = ufuncs[iu];
+        PyObject *op_map = PySequence_GetItem(op_maps, iu);
+        int nop = PySequence_Size(op_map);
+        if (nop < 0) {
+            goto fail;
+        }
+        if (Py_TYPE(ufunc) != ufunc_cls || ufunc->core_enabled ||
+                ufunc->ptr != NULL) {
+            PyErr_SetString(PyExc_TypeError,
+                            "every entry in 'ufuncs' should be a simple ufunc");
+            goto fail;
+        }
+        if (nop != ufunc->nargs) {
+            PyErr_SetString(PyExc_ValueError,
+                "op_map sequence should contain entries for each ufunc operand");
+            goto fail;
+        }
+    }
+    /*
+     * Here, there should be a proper routine determine the number
+     * of possible independent types.  For now, just NPY_DOUBLE.
+     */
     ntypes = 1;
     i = 0;
     sizes[i++] = sizeof(*ufunc_nop) * nufunc;
@@ -153,6 +187,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     sizes[i++] = sizeof(*inner_data) * ntypes * nufunc;
     sizes[i++] = sizeof(*data) * ntypes;
     sizes[i++] = sizeof(*chain_steps) * ntypes * ntmp;
+    sizes[i++] = sizeof(*name_copy) * (name_len + 1);
     /* This overallocates for op_indices, but it's not too much memory */
     sizes[i++] = sizeof(*op_indices) * nufunc * (nin + nout + ntmp);
     mem_size = 0;
@@ -161,8 +196,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         mem_size += sizes[i];
     }
     mem_ptr = PyArray_malloc(mem_size);
-    ufuncs = PyArray_malloc(sizeof(*ufuncs) * nufunc);
-    if (mem_ptr == NULL || ufuncs == NULL) {
+    if (mem_ptr == NULL) {
         PyErr_NoMemory();
         goto fail;
     }
@@ -184,29 +218,18 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     mem += sizes[i++];
     chain_steps = (npy_intp *)mem;
     mem += sizes[i++];
+    name_copy = (char *)mem;
+    mem += sizes[i++];
     op_indices = (int *)mem;
+
+    strncpy(name_copy, name, name_len + 1);
     nindices = 0;
     for (iu = 0; iu < nufunc; iu++) {
-        int nop;
         PyObject *op_map = PyList_GetItem(op_maps, iu);
-        ufunc = (PyUFuncObject *)PyList_GetItem(ufunc_list, iu);
-        if (Py_TYPE(ufunc) != ufunc_cls || ufunc->ptr != NULL) {
-            PyErr_SetString(PyExc_TypeError,
-                            "every entry in 'ufuncs' should be a simple ufunc");
-            goto fail;
-        }
-        nop = PyList_Size(op_map);
-        if (nop < 0) {
-            goto fail;
-        }
-        if (nop != ufunc->nargs) {
-            PyErr_SetString(PyExc_ValueError,
-                "op_map list should contain entries for each ufunc operand");
-            goto fail;
-        }
+        PyUFuncObject *ufunc = ufuncs[iu];
+        int nop = ufunc->nargs;
 
-        ufuncs[iu] = ufunc;
-        ufunc_nop[iu] = ufunc->nargs;
+        ufunc_nop[iu] = nop;
         for (iop = 0; iop < nop; iop++) {
             int op_index;
             PyObject *obj = PyNumber_Index(PyList_GetItem(op_map, iop));
@@ -251,7 +274,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             chain_info[itype].steps = NULL;
         }
         for (iu = 0; iu < nufunc; iu++) {
-            ufunc = ufuncs[iu];
+            PyUFuncObject *ufunc = ufuncs[iu];
             for (i = 0; i < ufunc->ntypes; i++) {
                 int it = i * ufunc->nargs;
                 if (ufunc->types[it] == NPY_DOUBLE) {
@@ -272,17 +295,16 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     }
     chained_ufunc = (PyUFuncObject *)PyUFunc_FromFuncAndData(
         functions, data, types, ntypes,
-        nin, nout, PyUFunc_None, name, doc, 0);
+        nin, nout, PyUFunc_None, name_copy, doc, 0);
     chained_ufunc->ptr = mem_ptr;
-    PyArray_free(ufuncs);
     Py_DECREF(op_maps);
-    Py_DECREF(ufunc_list);
+    Py_DECREF(ufuncs_arg);
     return (PyObject *)chained_ufunc;
 
   fail:
     PyArray_free(mem_ptr);
-    PyArray_free(ufuncs);
     Py_XDECREF(ufunc_list);
+    Py_XDECREF(ufuncs_arg);
     Py_XDECREF(op_maps);
     return NULL;
 }
