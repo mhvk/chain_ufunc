@@ -22,26 +22,30 @@ typedef struct {
     PyUFuncGenericFunction *functions;
     void **data;
     int *op_indices;
+    char **tmps;
+    npy_intp *steps;
 } ufunc_chain_info;
 
 
 static void
 inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 {
-    int iu, iop;
+    int i, iu, iop;
     int n=dimensions[0];
     char *ufunc_args[NPY_MAXARGS];
     npy_intp ufunc_steps[NPY_MAXARGS];
     ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
     int *index = chain_info->op_indices;
-    char *tmps=NULL;
+    char **tmps=chain_info->tmps;
     int ntmp=chain_info->ntmp;
     int ninout=chain_info->nin + chain_info->nout;
-    if (chain_info->ntmp > 0) {
-        tmps = PyArray_malloc(n * ntmp * sizeof(double));
-        if (!tmps) {
-            PyErr_NoMemory();
-            return;
+    if (ntmp > 0) {
+        for (i = 0; i < ntmp; i++) {
+            tmps[i] = PyArray_malloc(n * chain_info->steps[i]);
+            if (!tmps[i]) {
+                PyErr_NoMemory();
+                return;
+            }
         }
     }
     for (iu = 0; iu < chain_info->nufunc; iu++) {
@@ -53,16 +57,18 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                 ufunc_steps[iop] = steps[*index];
             }
             else {
-                ufunc_args[iop] = tmps + (*index - ninout) * n * sizeof(double);
-                ufunc_steps[iop] = sizeof(double);
+                ufunc_args[iop] = tmps[*index - ninout];
+                ufunc_steps[iop] = chain_info->steps[*index - ninout];
             }
             index++;
         }
         chain_info->functions[iu](ufunc_args, dimensions, ufunc_steps,
                                   chain_info->data[iu]);
     }
-    if (tmps) {
-        PyArray_free(tmps);
+    if (ntmp > 0) {
+        for (i = 0; i < ntmp; i++) {
+            PyArray_free(tmps[i]);
+        }
     }
 }
 
@@ -85,6 +91,8 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     PyUFuncGenericFunction *functions=NULL, *inner_loops=NULL;
     ufunc_chain_info *chain_info=NULL;
     void **data=NULL, **inner_data=NULL;
+    char **chain_tmps=NULL;
+    npy_intp *chain_steps=NULL;
     static PyTypeObject *ufunc_cls=NULL;
     int iu, itype, iop, nop;
 
@@ -130,9 +138,14 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     inner_loops = PyArray_malloc(ntypes * nufunc * sizeof(*inner_loops));
     inner_data = PyArray_malloc(ntypes * nufunc * sizeof(*inner_data));
     data = PyArray_malloc(ntypes * sizeof(*data));
+    if (ntmp > 0) {
+        chain_tmps = PyArray_malloc(ntypes * ntmp * sizeof(*chain_tmps));
+        chain_steps = PyArray_malloc(ntypes * ntmp * sizeof(*chain_steps));
+    }
     if (ufuncs == NULL || ufunc_nop == NULL || op_indices == NULL ||
         data == NULL || inner_loops == NULL || inner_data == NULL ||
-        types == NULL || chain_info == NULL || functions == NULL) {
+        types == NULL || chain_info == NULL || functions == NULL ||
+        (ntmp > 0 && (chain_tmps == NULL || chain_steps == NULL))) {
         PyErr_NoMemory();
         goto fail;
     }
@@ -186,6 +199,17 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         chain_info[itype].nop = ufunc_nop;
         chain_info[itype].functions = inner_loops + itype * nufunc;
         chain_info[itype].data = inner_data + itype * nufunc;
+        if (ntmp > 0) {
+            chain_info[itype].tmps = chain_tmps + itype * ntmp;
+            chain_info[itype].steps = chain_steps + itype *ntmp;;
+            for (i = 0; i < ntmp; i++) {
+                chain_info[itype].steps[i] = sizeof(double);
+            }
+        }
+        else {
+            chain_info[itype].tmps = NULL;
+            chain_info[itype].steps = NULL;
+        }
         for (iu = 0; iu < nufunc; iu++) {
             ufunc = ufuncs[iu];
             for (i = 0; i < ufunc->ntypes; i++) {
@@ -220,9 +244,14 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     PyArray_free(ufuncs);
     PyArray_free(ufunc_nop);
     PyArray_free(op_indices);
-    PyArray_free(functions);
+    PyArray_free(data);
+    PyArray_free(inner_loops);
+    PyArray_free(inner_data);
     PyArray_free(types);
     PyArray_free(chain_info);
+    PyArray_free(functions);
+    PyArray_free(chain_tmps);
+    PyArray_free(chain_steps);
     Py_XDECREF(ufunc_list);
     Py_XDECREF(op_maps);
     return NULL;
