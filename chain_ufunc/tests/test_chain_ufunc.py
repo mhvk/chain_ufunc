@@ -1,5 +1,5 @@
 import numpy as np
-from .. import ChainedUfunc, create_chained_ufunc, create_from_doc
+from .. import create_chained_ufunc, create_from_doc
 
 
 class TestSimple:
