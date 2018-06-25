@@ -13,6 +13,14 @@
 #include "numpy/npy_math.h"
 #include "numpy/npy_3kcompat.h"
 
+/*
+ * Should think about deallocation:
+ * point to UFUNCS and INCREF/DECREF them?
+ * ufunc_dealloc:
+ * - frees core_num_dims, core_offsets, core_signature, ptr, op_flags
+ * - XDECREFs ->userloops, ->obj
+ * ->ptr is meant for any dynamically allocated memory! (in ufunc_frompyfunc)
+ */
 typedef struct {
     int nin;
     int nout;
@@ -22,7 +30,6 @@ typedef struct {
     PyUFuncGenericFunction *functions;
     void **data;
     int *op_indices;
-    char **tmps;
     npy_intp *steps;
 } ufunc_chain_info;
 
@@ -36,16 +43,25 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     npy_intp ufunc_steps[NPY_MAXARGS];
     ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
     int *index = chain_info->op_indices;
-    char **tmps=chain_info->tmps;
     int ntmp=chain_info->ntmp;
     int ninout=chain_info->nin + chain_info->nout;
+    char *tmp_mem=NULL;
+    char **tmps={NULL};
     if (ntmp > 0) {
+        npy_intp s = ntmp * sizeof(*tmps);
         for (i = 0; i < ntmp; i++) {
-            tmps[i] = PyArray_malloc(n * chain_info->steps[i]);
-            if (!tmps[i]) {
-                PyErr_NoMemory();
-                return;
-            }
+            s += n * chain_info->steps[i];
+        }
+        tmp_mem = PyArray_malloc(s);
+        if (!tmp_mem) {
+            PyErr_NoMemory();
+            return;
+        }
+        tmps = (char **)tmp_mem;
+        s = ntmp * sizeof(*tmps);
+        for (i = 0; i < ntmp; i++) {
+            tmps[i] = tmp_mem + s;
+            s += n * chain_info->steps[i];
         }
     }
     for (iu = 0; iu < chain_info->nufunc; iu++) {
@@ -66,9 +82,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                                   chain_info->data[iu]);
     }
     if (ntmp > 0) {
-        for (i = 0; i < ntmp; i++) {
-            PyArray_free(tmps[i]);
-        }
+        PyArray_free(tmp_mem);
     }
 }
 
@@ -91,10 +105,9 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     PyUFuncGenericFunction *functions=NULL, *inner_loops=NULL;
     ufunc_chain_info *chain_info=NULL;
     void **data=NULL, **inner_data=NULL;
-    char **chain_tmps=NULL;
     npy_intp *chain_steps=NULL;
     static PyTypeObject *ufunc_cls=NULL;
-    int iu, itype, iop, nop;
+    int iu, itype, iop;
 
     if (ufunc_cls == NULL) {
         PyObject *mod = PyImport_ImportModule("numpy.core");
@@ -113,7 +126,6 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                                      &name, &doc)) {
         return NULL;
     }
-    nop = nin+nout;
     nufunc = PyList_Size(ufunc_list);
     if (nufunc < 0) {
         goto fail;
@@ -127,25 +139,24 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                         "'op_maps' must have as many entries as 'ufuncs'");
         goto fail;
     }
-    op_indices = PyArray_malloc(nufunc * (nop + ntmp) *
+    op_indices = PyArray_malloc(nufunc * (nin + nout + ntmp) *
                                 sizeof(*op_indices));
     ufuncs = PyArray_malloc(nufunc * sizeof(*ufuncs));
     ufunc_nop = PyArray_malloc(nufunc * sizeof(*ufunc_nop));
     ntypes = 1;
-    types = PyArray_malloc(nop * ntypes * sizeof(*types));
+    types = PyArray_malloc((nin + nout) * ntypes * sizeof(*types));
     chain_info = PyArray_malloc(ntypes * sizeof(*chain_info));
     functions = PyArray_malloc(ntypes * sizeof(*functions));
     inner_loops = PyArray_malloc(ntypes * nufunc * sizeof(*inner_loops));
     inner_data = PyArray_malloc(ntypes * nufunc * sizeof(*inner_data));
     data = PyArray_malloc(ntypes * sizeof(*data));
     if (ntmp > 0) {
-        chain_tmps = PyArray_malloc(ntypes * ntmp * sizeof(*chain_tmps));
         chain_steps = PyArray_malloc(ntypes * ntmp * sizeof(*chain_steps));
     }
     if (ufuncs == NULL || ufunc_nop == NULL || op_indices == NULL ||
         data == NULL || inner_loops == NULL || inner_data == NULL ||
         types == NULL || chain_info == NULL || functions == NULL ||
-        (ntmp > 0 && (chain_tmps == NULL || chain_steps == NULL))) {
+        (ntmp > 0 && chain_steps == NULL)) {
         PyErr_NoMemory();
         goto fail;
     }
@@ -182,12 +193,19 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             if (op_index == -1 && PyErr_Occurred()) {
                 goto fail;
             }
+            if (op_index < 0 || op_index >= nin + nout + ntmp) {
+                PyErr_Format(PyExc_ValueError,
+                             "index %d larger than maximum allowed: "
+                             "nin+nout+ntmp=%d+%d+%d=%d",
+                             op_index, nin, nout, ntmp, nin + nout + ntmp);
+                goto fail;
+            }
             op_indices[nindices++] = op_index;
         }
     }
     op_indices = PyArray_realloc(op_indices, nindices * sizeof(*op_indices));
     for (itype = 0; itype < ntypes; itype++) {
-        int i;
+        int i, nop = nin + nout;
         for (i = itype*nop; i < (itype+1)*nop; i++) {
             types[i] = NPY_DOUBLE;
         }
@@ -200,14 +218,12 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         chain_info[itype].functions = inner_loops + itype * nufunc;
         chain_info[itype].data = inner_data + itype * nufunc;
         if (ntmp > 0) {
-            chain_info[itype].tmps = chain_tmps + itype * ntmp;
             chain_info[itype].steps = chain_steps + itype *ntmp;;
             for (i = 0; i < ntmp; i++) {
                 chain_info[itype].steps[i] = sizeof(double);
             }
         }
         else {
-            chain_info[itype].tmps = NULL;
             chain_info[itype].steps = NULL;
         }
         for (iu = 0; iu < nufunc; iu++) {
@@ -250,7 +266,6 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     PyArray_free(types);
     PyArray_free(chain_info);
     PyArray_free(functions);
-    PyArray_free(chain_tmps);
     PyArray_free(chain_steps);
     Py_XDECREF(ufunc_list);
     Py_XDECREF(op_maps);
