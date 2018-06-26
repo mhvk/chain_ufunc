@@ -130,17 +130,15 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
                     nones=('None,' if nout == 1 else
                            ', '.join(['None'] * nout))))
     code_lines = ["{name}({inputs}):".format(name=name, inputs=inputs)]
-    if ntmp:
-        code_lines.append('# Temporaries: {temporaries}'
-                          .format(temporaries=', '.join(names[nargs:])))
+    code_lines.append('{} = None'.format(', '.join(names[nin:])))
     for uf, op_map in zip(ufuncs, op_maps):
         uf_in = [names[op_map[i]] for i in range(uf.nin)]
         uf_out = [names[op_map[i]] for i in range(uf.nin, uf.nargs)]
-        code_lines.append("{}({}, out={})"
-                          .format(uf.__name__,
-                                  ', '.join(uf_in),
-                                  (uf_out[0] if uf.nout == 1 else
-                                   ', '.join(uf_out))))
+        code_lines.append("{outs} = {ufunc}({ins}, out={outs})"
+                          .format(ufunc=uf.__name__,
+                                  ins=', '.join(uf_in),
+                                  outs=(uf_out[0] if uf.nout == 1 else
+                                        ', '.join(uf_out))))
     code_lines.append('return {outputs}'.format(outputs=outputs))
     implements = ">>> def {}\n".format("\n...     ".join(code_lines))
     doc = ("{}\n\nImplements:\n\n{}"
@@ -159,24 +157,18 @@ def parse_doc(doc):
     name, inputs = (lines[0].split('def ')[1].replace('):', '')
                     .split('('))
     inputs = inputs.split(', ')
-    outputs = lines[-1].split('return ')[1].strip().split(', ')
-    temporaries = lines[1].split('Temporaries: ')
-    if len(temporaries) == 1:
-        temporaries = []
-        code_lines = lines[1:-1]
-    else:
-        temporaries = temporaries[1].split(', ')
-        code_lines = lines[2:-1]
-    names = inputs + outputs + temporaries
     nin = len(inputs)
+    outputs = lines[-1].split('return ')[1].strip().split(', ')
     nout = len(outputs)
+    temporaries = lines[1].split('= None')[0].strip().split(', ')[nout:]
     ntmp = len(temporaries)
+    names = inputs + outputs + temporaries
     op_maps = []
     ufuncs = []
 
-    for line in code_lines:
-        ufunc, args = line.replace(')', '').split('(')
-        ufuncs.append(getattr(np, ufunc))
+    for line in lines[2:-1]:
+        ufunc, args = line[line.index('=')+1:].replace(')', '').split('(')
+        ufuncs.append(getattr(np, ufunc.strip()))
         ins, outs = args.split(', out=')
         outs.replace('(', '').replace(')', '')
         args = ins.split(', ') + outs.split(', ')

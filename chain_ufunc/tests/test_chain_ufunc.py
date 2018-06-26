@@ -41,13 +41,23 @@ class TestSimple:
 class TestCreateFromDoc:
     """
     def chain(a, b, c):
-        multiply(a, b, out=d)
-        add(d, c, out=d)
+        d = None
+        d = multiply(a, b, out=d)
+        d = add(d, c, out=d)
         return d
     """
     def test_cls_doc(self):
+        from numpy import multiply, add
         muladd = create_from_doc(self.__class__.__doc__)
         in1 = np.array([1.5, 2.])
         in2 = np.array([0.1, -0.1])
         tst = muladd(in1, in2, 3.)
         assert np.all(tst == (in1 * in2) + 3.)
+
+        def chain(a, b, c):
+            d = None
+            d = multiply(a, b, out=d)
+            d = add(d, c, out=d)
+            return d
+
+        assert np.all(chain(in1, in2, 3.) == tst)
