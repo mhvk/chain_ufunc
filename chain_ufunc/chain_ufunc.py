@@ -303,41 +303,39 @@ class WrappedUfunc(object):
         # For the maps before the appending, we just need to add offsets
         # so that any new inputs can be accomodated. Note that some outputs
         # may become temporaries or vice versa; that's OK.
-        self_op_maps = self._adjusted_maps(
-            [0]*self.nin +
-            [extra_nin]*n_other_in_from_self_out +
-            [extra_nin+extra_nout]*(self.nout + self.ntmp -
-                                    n_other_in_from_self_out))
+        self_offsets = ([0]*self.nin +
+                        [extra_nin]*n_other_in_from_self_out +
+                        [extra_nin+extra_nout]*(self.nout + self.ntmp -
+                                                n_other_in_from_self_out))
+        self_op_maps = self._adjusted_maps(self_offsets)
 
         # Now see how the number of outputs changes relative to other.
         nout = other.nout + extra_nout
-        other_op_maps = other._adjusted_maps(
+        other_offsets = (
             [nin]*n_other_in_from_self_out +
             [self.nin - n_other_in_from_self_out]*extra_nin +
             [nin - other.nin]*other.nout +
             [nin - other.nin + extra_nout]*other.ntmp)
 
+        other_op_maps = other._adjusted_maps(other_offsets)
+
         ufuncs = self.ufuncs + other.ufuncs
         op_maps = self_op_maps + other_op_maps
         ntmp = max(self.nout + self.ntmp - nout,
                    other.nout + other.ntmp - nout, 0)
-        in_names = (self.names[:self.nin] +
-                    other.names[self.nout:self.nout + extra_nin])
-        out_names = ([(o_n if o_n else s_n)
-                      for (o_n, s_n) in itertools.zip_longest(
-                              other.names[other.nin:other.nargs],
-                              self.names[self.nin:self.nin +
-                                         min(self.nout, other.nout)])] +
-                     self.names[self.nargs - extra_nout:self.nargs])
-        tmp_names = [None] * ntmp
-        tmp_names = [(o_n if s_n is None else s_n)
-                     for (s_n, o_n, _) in itertools.zip_longest(
-                             self.names[self.nargs:self.nargs+ntmp],
-                             other.names[other.nargs:other.nargs+ntmp],
-                             tmp_names)]
+
+        # Find names for new map positions from self and other
+        s_names = [None]*(nin + nout + ntmp)
+        o_names = [None]*(nin + nout + ntmp)
+        for i, (offset, name) in enumerate(zip(self_offsets, self.names)):
+            s_names[i+offset] = name
+        for i, (offset, name) in enumerate(zip(other_offsets, other.names)):
+            o_names[i+offset] = name
+        names = [(o_n if o_n else s_n)
+                 for (o_n, s_n) in zip(o_names, s_names)]
 
         return self.from_chain(ufuncs, op_maps, nin, nout, ntmp,
-                               names=in_names + out_names + tmp_names)
+                               names=names)
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
