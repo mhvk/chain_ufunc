@@ -1,4 +1,5 @@
 import textwrap
+import itertools
 import numpy as np
 
 from ufunc_chain import create as create_ufunc_chain
@@ -216,7 +217,7 @@ class WrappedUfunc(object):
              self.nin, self.nout, self.ntmp, self.__name__,
              self.names) = parse_doc(doc)
         else:
-            if isinstance(ufunc, ChainedUfunc):
+            if hasattr(ufunc, '__module__'):
                 raise TypeError("ChainedUfunc with bad doc: {}"
                                 .format(ufunc.__doc__))
             self.ufuncs = [ufunc]
@@ -245,26 +246,9 @@ class WrappedUfunc(object):
         output = self.ufunc(*args, **kwargs)
         return output[self.outsel] if self.outsel else output
 
-    def _adjusted_maps(self, off_in, off_out, off_tmp):
-        if off_in == 0 and off_out == 0 and (off_tmp == 0 or self.ntmp == 0):
-            return self.op_maps
-
-        nin = self.nin
-        ninplusout = nin + self.nout
-        old_maps = self.op_maps
-        new_maps = []
-        for old_map in old_maps:
-            new_map = []
-            for i in old_map:
-                if i < nin:
-                    i += off_in
-                elif i < ninplusout:
-                    i += off_out
-                else:
-                    i += off_tmp
-                new_map.append(i)
-            new_maps.append(new_map)
-        return new_maps
+    def _adjusted_maps(self, offsets):
+        return [[i + offsets[i] for i in old_map]
+                for old_map in self.op_maps]
 
     @classmethod
     def from_chain(cls, ufuncs, op_maps, nin, nout, ntmp,
@@ -278,21 +262,28 @@ class WrappedUfunc(object):
             return NotImplemented
 
         # first adjust the input and output maps for self
-        self_maps = self._adjusted_maps(0, other.nin, other.nin + other.nout)
-        other_maps = other._adjusted_maps(self.nin, self.nin + self.nout,
-                                          self.nin + self.nout)
-        names = (self.names[:self.nin] +
-                 other.names[:other.nin] +
-                 self.names[self.nin:self.nargs] +
-                 other.names[other.nin:other.nargs] +
-                 self.names[self.nargs:] +
-                 other.names[other.nargs:])
+        self_maps = self._adjusted_maps(
+            [0]*self.nin +
+            [other.nin]*self.nout +
+            [other.nin + other.nout]*self.ntmp)
+        other_maps = other._adjusted_maps(
+            [self.nin]*other.nin +
+            [self.nin + self.nout]*(other.nout + other.ntmp))
+
+        in_names = self.names[:self.nin] + other.names[:other.nin]
+        out_names = (self.names[self.nin:self.nargs] +
+                     other.names[other.nin:other.nargs])
+        tmp_names = [(o_n if s_n is None else s_n)
+                     for (s_n, o_n) in itertools.zip_longest(
+                             self.names[self.nargs:],
+                             other.names[other.nargs:])]
         return self.from_chain(self.ufuncs + other.ufuncs,
                                self_maps + other_maps,
                                self.nin + other.nin,
                                self.nout + other.nout,
                                max(self.ntmp, other.ntmp),
-                               names=names)
+                               names=(in_names + out_names +
+                                      tmp_names))
 
     def __or__(self, other):
         if isinstance(other, (ChainedUfunc, np.ufunc)):
@@ -303,54 +294,50 @@ class WrappedUfunc(object):
         # First determine whether our outputs suffice for inputs;
         # if not, we need new inputs, and thus have to rearrange our maps.
         extra_nin = max(other.nin - self.nout, 0)
+        extra_nout = max(self.nout - other.nin, 0)
         nin = self.nin + extra_nin
         # take as many inputs as needed and can be provided from our outputs
         # (or rather where they will be after remapping).
         n_other_in_from_self_out = min(other.nin, self.nout)
-        # For now, these inputs are only allowed at the start of other
-        # (need to assign a temporary for them otherwise)
-        for other_op_map, other_ufunc in zip(other.op_maps[1:],
-                                             other.ufuncs[1:]):
-            if any(i < n_other_in_from_self_out
-                   for i in other_op_map[:other_ufunc.nin]):
-                raise NotImplementedError(
-                    "Cannot yet append chain in which an input does not "
-                    "immediately use the outputs.")
-
-        other_input_remap = list(range(nin, nin+n_other_in_from_self_out))
-        if extra_nin:
-            # add any missing ones from the new inputs.
-            other_input_remap += list(range(self.nin, nin))
 
         # For the maps before the appending, we just need to add offsets
         # so that any new inputs can be accomodated. Note that some outputs
         # may become temporaries or vice versa; that's OK.
-        self_op_maps = self._adjusted_maps(0, extra_nin, extra_nin)
+        self_op_maps = self._adjusted_maps(
+            [0]*self.nin +
+            [extra_nin]*n_other_in_from_self_out +
+            [extra_nin+extra_nout]*(self.nout + self.ntmp -
+                                    n_other_in_from_self_out))
 
         # Now see how the number of outputs changes relative to other.
-        nout = other.nout + max(self.nout - other.nin, 0)
+        nout = other.nout + extra_nout
         other_op_maps = other._adjusted_maps(
-            0, nin - other.nin, nin - other.nin + nout - other.nout)
-        # finally change where other gets its inputs.
-        ou0_nin = other.ufuncs[0].nin
-        other_op_maps[0] = ([other_input_remap[i]
-                             for i in other_op_maps[0][:ou0_nin]] +
-                            other_op_maps[0][ou0_nin:])
+            [nin]*n_other_in_from_self_out +
+            [self.nin - n_other_in_from_self_out]*extra_nin +
+            [nin - other.nin]*other.nout +
+            [nin - other.nin + extra_nout]*other.ntmp)
 
         ufuncs = self.ufuncs + other.ufuncs
         op_maps = self_op_maps + other_op_maps
         ntmp = max(self.nout + self.ntmp - nout,
                    other.nout + other.ntmp - nout, 0)
-        names = (self.names[:self.nin] +
-                 other.names[self.nout:self.nout + extra_nin] +
-                 [(other.names[i] if other.names[i] else
-                   self.names[self.nin + i]) for i in range(self.nout)] +
-                 other.names[other.nin +
-                             n_other_in_from_self_out:other.nargs] +
-                 self.names[self.nargs:] +
-                 other.names[other.nargs:other.nargs + other.ntmp - self.ntmp])
+        in_names = (self.names[:self.nin] +
+                    other.names[self.nout:self.nout + extra_nin])
+        out_names = ([(o_n if o_n else s_n)
+                      for (o_n, s_n) in itertools.zip_longest(
+                              other.names[other.nin:other.nargs],
+                              self.names[self.nin:self.nin +
+                                         min(self.nout, other.nout)])] +
+                     self.names[self.nargs - extra_nout:self.nargs])
+        tmp_names = [None] * ntmp
+        tmp_names = [(o_n if s_n is None else s_n)
+                     for (s_n, o_n, _) in itertools.zip_longest(
+                             self.names[self.nargs:self.nargs+ntmp],
+                             other.names[other.nargs:other.nargs+ntmp],
+                             tmp_names)]
 
-        return self.from_chain(ufuncs, op_maps, nin, nout, ntmp, names=names)
+        return self.from_chain(ufuncs, op_maps, nin, nout, ntmp,
+                               names=in_names + out_names + tmp_names)
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
@@ -397,6 +384,7 @@ class WrappedUfunc(object):
     def graph(self):
         from graphviz import Digraph
         arg_names = self.arg_names
+
         dg_in = Digraph('in', node_attr=dict(shape='point', rank='min'))
         for i in range(self.nin):
             dg_in.node(arg_names[i])
@@ -423,13 +411,13 @@ class WrappedUfunc(object):
             dg.edge(arg_name, node_port(0, arg_name))
         for iu, (ufunc, op_map) in enumerate(
                 zip(self.ufuncs, self.op_maps)):
-
+            name = "ufunc{}".format(iu)
             # ensure array holders are aligned
             dg.edge(node_port(iu, arg_names[0]),
                     node_port(iu+1, arg_names[0]),
                     style='invis')
             # connect arrays to ufunc inputs.
-            name = ufunc.__name__
+            dg.node(name, label=ufunc.__name__)
             for i in range(ufunc.nin):
                 arg_name = arg_names[op_map[i]]
                 if ufunc.nin == 1:
@@ -486,7 +474,9 @@ class Input(InOut):
             result |= ufunc
             names = result.names
             if input_first:
-                op_maps = result._adjusted_maps(1, 0, 0)
+                op_maps = result._adjusted_maps([1]*result.nin +
+                                                [0]*(result.nout +
+                                                     result.ntmp))
                 op_maps[-1][ufunc.nin-1] = 0
                 names[:result.nin] = ([input_.name] +
                                       result.names[:result.nin-1])
@@ -496,8 +486,8 @@ class Input(InOut):
 
         else:
             result = WrappedUfunc(ufunc)
-            op_maps = result.op_maps
             names = [a.name for a in inputs] + result.names[ufunc.nin:]
+            op_maps = result.op_maps
             if len(names) - names.count(None) != len(set(names) - {None}):
                 raise NotImplementedError("duplicate names")
 

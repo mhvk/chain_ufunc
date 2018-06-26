@@ -73,3 +73,10 @@ class TestIdentities:
         mulsinarcsin = np.arcsin(np.sin(np.multiply(Input(), Input())))
         mulsinarcsin2 = np.arcsin(mulsin)
         assert mulsinarcsin == mulsinarcsin2
+
+
+class TestOpMaps:
+    def test_modf_modf(self):
+        modf = np.modf(Input())
+        modfmodf = modf | modf
+        assert modfmodf.op_maps == [[0, 1, 3], [1, 1, 2]]
