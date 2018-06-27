@@ -131,7 +131,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     /* Counters */
     int ilink, itype, i;
     /* Parts for which memory will be allocated */
-    char *mem_ptr=NULL, *mem;
+    char *ufunc_mem=NULL, *mem;
     npy_intp mem_size, sizes[10];
     PyUFuncGenericFunction *functions;
     void **data;
@@ -201,7 +201,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         }
         if (PyTuple_Size(link) != 2) {
             PyErr_SetString(PyExc_ValueError,
-                "each entry in 'chain' should be a tuple with 2 elements:"
+                "each entry in 'links' should be a tuple with 2 elements:"
                 "a ufunc and a list of operand indices");
             goto fail;
         }
@@ -280,13 +280,13 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         mem_size += sizes[i];
     }
     /* Actually allocate the memory */
-    mem_ptr = PyArray_malloc(mem_size);
-    if (mem_ptr == NULL) {
+    ufunc_mem = PyArray_malloc(mem_size);
+    if (ufunc_mem == NULL) {
         PyErr_NoMemory();
         goto fail;
     }
     /* Assign appropriately */
-    mem = mem_ptr;
+    mem = ufunc_mem;
     i = 0;
     functions = (PyUFuncGenericFunction *)mem;
     mem += sizes[i++];
@@ -307,11 +307,9 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     type_indices = (int *)mem;
     mem += sizes[i++];
     /* For name and doc, again copy information we have */
-    strncpy(mem, name, name_len + 1);
-    name = (char *)mem;
+    name = strncpy(mem, name, name_len + 1);
     mem += sizes[i++];
-    strncpy(mem, doc, doc_len + 1);
-    doc = (char *)mem;
+    doc = strncpy(mem, doc, doc_len + 1);
     /* fill ufuncs array */
     for (ilink = 0; ilink < nlink; ilink++) {
         PyObject *link = PyList_GET_ITEM(chain, ilink);
@@ -363,21 +361,19 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         functions, data, types, ntypes,
         nin, nout, PyUFunc_None, name, doc, 0);
     /*
-     * We need to keep ufunc_tuple and mem_ptr around, as they have the
+     * We need to keep ufunc_tuple and ufunc_mem around, as they have the
      * required information, but they should be deallocated when the ufunc
      * is deleted. Use ->obj and ->ptr for this (also used in frompyfunc).
      */
     chained_ufunc->obj = chain;
-    chained_ufunc->ptr = mem_ptr;
+    chained_ufunc->ptr = ufunc_mem;
     PyArray_free(tmp_mem);
-    Py_DECREF(links);
     return (PyObject *)chained_ufunc;
 
   fail:
-    PyArray_free(mem_ptr);
+    PyArray_free(ufunc_mem);
     PyArray_free(tmp_mem);
     Py_XDECREF(chain);
-    Py_XDECREF(links);
     return NULL;
 }
 
@@ -424,19 +420,18 @@ get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             index = PyLong_FromLong(iop);
             PyList_SET_ITEM(op_map, iop, index);
         }
+        Py_INCREF(ufunc_obj);
         PyTuple_SET_ITEM(link, 0, ufunc_obj);
         PyTuple_SET_ITEM(link, 1, op_map);
         PyList_SET_ITEM(chain, 0, link);
         /* chain is new ref, all others put inside */
     }
-    Py_DECREF(ufunc_obj);
     return chain;
 
 fail:
     Py_XDECREF(chain);
     Py_XDECREF(link);
     Py_XDECREF(op_map);
-    Py_DECREF(ufunc_obj);
     return NULL;
 }
 

@@ -2,10 +2,10 @@ import textwrap
 import itertools
 import numpy as np
 
-from ufunc_chain import create as create_ufunc_chain
+from ufunc_chain import create as create_ufunc_chain, get_chain
 
-__all__ = ['ChainedUfunc', 'create_chained_ufunc', 'create_from_doc',
-           'WrappedUfunc', 'Input', 'Output']
+__all__ = ['ChainedUfunc', 'create_chained_ufunc', 'get_chain',
+           'create_from_doc', 'WrappedUfunc', 'Input', 'Output']
 
 
 class ChainedUfunc(object):
@@ -114,7 +114,7 @@ def arg_name(names, i, nin, nout):
     return name
 
 
-def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
+def create_chained_ufunc(links, nin, nout, ntmp,
                          name='ufunc_chain', names=None):
     nargs = nin + nout
     if names is None:
@@ -131,7 +131,7 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
                            ', '.join(['None'] * nout))))
     code_lines = ["{name}({inputs}):".format(name=name, inputs=inputs)]
     code_lines.append('{} = None'.format(', '.join(names[nin:])))
-    for uf, op_map in zip(ufuncs, op_maps):
+    for uf, op_map in links:
         uf_in = [names[op_map[i]] for i in range(uf.nin)]
         uf_out = [names[op_map[i]] for i in range(uf.nin, uf.nargs)]
         code_lines.append("{outs} = {ufunc}({ins}, out={outs})"
@@ -143,7 +143,6 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
     implements = ">>> def {}\n".format("\n...     ".join(code_lines))
     doc = ("{}\n\nImplements:\n\n{}"
            .format(doc0, textwrap.indent(implements, "    ")))
-    links = [tup2 for tup2 in zip(ufuncs, op_maps)]
     return create_ufunc_chain(links, nin, nout, ntmp, name, doc)
 
 
@@ -164,23 +163,22 @@ def parse_doc(doc):
     temporaries = lines[1].split('= None')[0].strip().split(', ')[nout:]
     ntmp = len(temporaries)
     names = inputs + outputs + temporaries
-    op_maps = []
-    ufuncs = []
+    links = []
 
     for line in lines[2:-1]:
         ufunc, args = line[line.index('=')+1:].replace(')', '').split('(')
-        ufuncs.append(getattr(np, ufunc.strip()))
         ins, outs = args.split(', out=')
         outs.replace('(', '').replace(')', '')
         args = ins.split(', ') + outs.split(', ')
-        op_maps.append([names.index(arg) for arg in args])
+        links.append((getattr(np, ufunc.strip()),
+                      [names.index(arg) for arg in args]))
 
     allnone = [None] * (nin + nout + ntmp)
     placeholders = [arg_name(allnone, i, nin, nout)
                     for i in range(nin + nout + ntmp)]
     names = [name if name != placeholder else None
              for (name, placeholder) in zip(names, placeholders)]
-    return ufuncs, op_maps, nin, nout, ntmp, name, names
+    return links, nin, nout, ntmp, name, names
 
 
 def create_from_doc(doc):
@@ -206,9 +204,11 @@ class WrappedUfunc(object):
 
         doc = self.__doc__ = ufunc.__doc__
         if 'Implements:\n\n    >>> def ' in doc:
-            (self.ufuncs, self.op_maps,
+            (self.links,
              self.nin, self.nout, self.ntmp, self.__name__,
              self.names) = parse_doc(doc)
+            self.ufuncs = [link[0] for link in self.links]
+            self.op_maps = [link[1] for link in self.links]
         else:
             if hasattr(ufunc, '__module__'):
                 raise TypeError("ChainedUfunc with bad doc: {}"
@@ -244,9 +244,9 @@ class WrappedUfunc(object):
                 for old_map in self.op_maps]
 
     @classmethod
-    def from_chain(cls, ufuncs, op_maps, nin, nout, ntmp,
+    def from_chain(cls, links, nin, nout, ntmp,
                    name='chained_ufunc', names=None):
-        ufunc = create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
+        ufunc = create_chained_ufunc(links, nin, nout, ntmp,
                                      name, names)
         return cls(ufunc)
 
@@ -270,8 +270,9 @@ class WrappedUfunc(object):
                      for (s_n, o_n) in itertools.zip_longest(
                              self.names[self.nargs:],
                              other.names[other.nargs:])]
-        return self.from_chain(self.ufuncs + other.ufuncs,
-                               self_maps + other_maps,
+        links = [tup for tup in zip(self.ufuncs + other.ufuncs,
+                                    self_maps + other_maps)]
+        return self.from_chain(links,
                                self.nin + other.nin,
                                self.nout + other.nout,
                                max(self.ntmp, other.ntmp),
@@ -327,8 +328,9 @@ class WrappedUfunc(object):
         names = [(o_n if o_n else s_n)
                  for (o_n, s_n) in zip(o_names, s_names)]
 
-        return self.from_chain(ufuncs, op_maps, nin, nout, ntmp,
-                               names=names)
+        links = [tup for tup in zip(self.ufuncs + other.ufuncs,
+                                    self_op_maps + other_op_maps)]
+        return self.from_chain(links, nin, nout, ntmp, names=names)
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs and method == '__call__' and
@@ -482,7 +484,8 @@ class Input(InOut):
             if len(names) - names.count(None) != len(set(names) - {None}):
                 raise NotImplementedError("duplicate names")
 
-        result = result.from_chain(result.ufuncs, op_maps,
+        links = [tup for tup in zip(result.ufuncs, op_maps)]
+        result = result.from_chain(links,
                                    result.nin, result.nout,
                                    result.ntmp, result.__name__, names)
 
@@ -515,7 +518,8 @@ class Output(InOut):
             if output is not None:
                 names[iout] = output.name
         if names != result.names:
-            result = result.from_chain(result.ufuncs, result.op_maps,
+            links = [tup for tup in zip(result.ufuncs, result.op_maps)]
+            result = result.from_chain(links,
                                        result.nin, result.nout, result.ntmp,
                                        result.__name__, names)
         return result
