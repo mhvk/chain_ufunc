@@ -124,8 +124,6 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     size_t name_len=-1, doc_len=-1;
     PyObject *chain=NULL;
     int nlink, nindices;
-    int *op_indices;
-    char* tmp_mem=NULL;
     /* Calculated */
     int ntypes;
     /* Counters */
@@ -137,6 +135,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     void **data;
     char *types;
     PyUFuncObject **ufuncs;
+    int *op_indices;
     ufunc_chain_info *chain_info;
     npy_intp *tmp_steps;
     int *type_indices;
@@ -176,23 +175,13 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         goto fail;
     }
     /*
-     * allocate temporary memory for op_indices.
-     * It gets a properly sized allocation below.
-     */
-    tmp_mem = PyArray_malloc(sizeof(*op_indices) * nlink *
-                             (nin + nout + ntmp));
-    if (tmp_mem == NULL) {
-        goto fail;
-    }
-    /*
      * Get operand indices as flattened array
      */
-    op_indices = (int *)tmp_mem;
     nindices = 0;
     for (ilink = 0; ilink < nlink; ilink++) {
         PyUFuncObject *ufunc;
         PyObject *op_map;
-        int iop, nop;
+        int nop;
         PyObject *link = PySequence_GetItem(links, ilink);
         /* Transfers reference; DECREF'd if list is DECREF'd */
         PyList_SET_ITEM(chain, ilink, link);
@@ -217,39 +206,12 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         if (nop < 0) {
             goto fail;
         }
-        if (nop != ufunc->nargs) {
+        else if (nop != ufunc->nargs) {
             PyErr_SetString(PyExc_ValueError,
                 "op_map sequence should contain an entry for each ufunc operand");
             goto fail;
         }
-        for (iop = 0; iop < nop; iop++) {
-            int op_index;
-            PyObject *number;
-            int min_index = iop < ufunc->nin ? 0: nin;
-            PyObject *obj = PySequence_GetItem(op_map, iop);
-            if (obj == NULL) {
-                goto fail;
-            }
-            number = PyNumber_Index(obj);
-            Py_DECREF(obj);
-            if (number == NULL) {
-                goto fail;
-            }
-            op_index = PyLong_AsLong(number);
-            Py_DECREF(number);
-            if (op_index == -1 && PyErr_Occurred()) {
-                goto fail;
-            }
-            if (op_index < min_index  || op_index >= nin + nout + ntmp) {
-                PyErr_Format(PyExc_ValueError,
-                             "index %d outside of allowed range: "
-                             "%d - %d (nin=%d, nout=%d, ntmp=%d)",
-                             op_index, min_index, nin + nout + ntmp,
-                             nin, nout, ntmp);
-                goto fail;
-            }
-            op_indices[nindices++] = op_index;
-        }
+        nindices += nop;
     }
     /*
      * Here, there should be a proper routine determine the number
@@ -297,7 +259,6 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     ufuncs = (PyUFuncObject **)mem;
     mem += sizes[i++];
     /* Copy op_indices from temporary memory allocation */
-    memcpy(mem, tmp_mem, sizeof(*op_indices) * nindices);
     op_indices = (int *)mem;
     mem += sizes[i++];
     chain_info = (ufunc_chain_info *)mem;
@@ -311,10 +272,41 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     mem += sizes[i++];
     doc = strncpy(mem, doc, doc_len + 1);
     /* fill ufuncs array */
+    nindices = 0;
     for (ilink = 0; ilink < nlink; ilink++) {
+        int iop;
         PyObject *link = PyList_GET_ITEM(chain, ilink);
         PyUFuncObject *ufunc = (PyUFuncObject *)PyTuple_GET_ITEM(link, 0);
+        PyObject *op_map = PyTuple_GET_ITEM(link, 1);
         ufuncs[ilink] = ufunc;
+        for (iop = 0; iop < ufunc->nargs; iop++) {
+            int op_index;
+            PyObject *number;
+            int min_index = iop < ufunc->nin ? 0: nin;
+            PyObject *obj = PySequence_GetItem(op_map, iop);
+            if (obj == NULL) {
+                goto fail;
+            }
+            number = PyNumber_Index(obj);
+            Py_DECREF(obj);
+            if (number == NULL) {
+                goto fail;
+            }
+            op_index = PyLong_AsLong(number);
+            Py_DECREF(number);
+            if (op_index == -1 && PyErr_Occurred()) {
+                goto fail;
+            }
+            if (op_index < min_index  || op_index >= nin + nout + ntmp) {
+                PyErr_Format(PyExc_ValueError,
+                             "index %d outside of allowed range: "
+                             "%d - %d (nin=%d, nout=%d, ntmp=%d)",
+                             op_index, min_index, nin + nout + ntmp,
+                             nin, nout, ntmp);
+                goto fail;
+            }
+            op_indices[nindices++] = op_index;
+        }
     }
     /*
      * Set up ufunc information for each type (just DOUBLE for now).
@@ -367,12 +359,10 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
      */
     chained_ufunc->obj = chain;
     chained_ufunc->ptr = ufunc_mem;
-    PyArray_free(tmp_mem);
     return (PyObject *)chained_ufunc;
 
   fail:
     PyArray_free(ufunc_mem);
-    PyArray_free(tmp_mem);
     Py_XDECREF(chain);
     return NULL;
 }
