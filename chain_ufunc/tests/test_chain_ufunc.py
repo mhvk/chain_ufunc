@@ -1,5 +1,24 @@
 import numpy as np
-from .. import create_chained_ufunc, create_from_doc
+from .. import create_chained_ufunc, create_from_doc, get_chain
+
+
+class TestGetChain:
+    def test_regular_ufunc(self):
+        chain = get_chain(np.add)
+        assert chain == [(np.add, [0, 1, 2])]
+        chain = get_chain(np.modf)
+        assert chain == [(np.modf, [0, 1, 2])]
+        chain = get_chain(np.sin)
+        assert chain == [(np.sin, [0, 1])]
+
+    def test_chain(self):
+        sincosarctan2 = create_chained_ufunc([np.sin, np.cos, np.arctan2],
+                                             [[0, 2], [1, 3], [2, 3, 2]],
+                                             2, 1, 1)
+        chain = get_chain(sincosarctan2)
+        assert chain == [(np.sin, [0, 2]),
+                         (np.cos, [1, 3]),
+                         (np.arctan2, [2, 3, 2])]
 
 
 class TestSimple:

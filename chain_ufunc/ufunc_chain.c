@@ -91,10 +91,9 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 }
 
 
-static PyTypeObject *ufunc_cls=NULL;
-
 static PyTypeObject *get_ufunc_cls()
 {
+    static PyTypeObject *ufunc_cls=NULL;
     if (ufunc_cls == NULL) {
         PyObject *mod = PyImport_ImportModule("numpy");
         if (mod == NULL) {
@@ -383,8 +382,68 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 }
 
 
+static PyObject *
+get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
+{
+    char *kw_list[] = {"ufunc", NULL};
+    PyObject *ufunc_obj;
+    PyUFuncObject *ufunc;
+    PyObject *chain=NULL, *link=NULL, *op_map=NULL, *index;
+    int iop;
+    PyTypeObject *ufunc_cls = get_ufunc_cls();
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O", kw_list, &ufunc_obj)) {
+        return NULL;
+    }
+    ufunc = (PyUFuncObject *)ufunc_obj;
+    if (Py_TYPE(ufunc) != ufunc_cls || ufunc->core_enabled) {
+        PyErr_SetString(PyExc_TypeError,
+            "can only get chain for non-generalized ufuncs");
+        goto fail;
+    }
+    if (ufunc->obj) {
+        if (!PyList_Check(ufunc->obj) || PyList_Size(ufunc->obj) < 1 ||
+            !PyTuple_Check(PyList_GET_ITEM(ufunc->obj, 0))) {
+            PyErr_SetString(PyExc_ValueError,
+                            "ufunc does not contain chain list with "
+                            "tuple elements.");
+            goto fail;
+        }
+        chain = ufunc->obj;
+        Py_INCREF(chain);
+    }
+    else {
+        /* simple ufunc, create 1-element chain */
+        chain = PyList_New(1);
+        link = PyTuple_New(2);
+        op_map = PyList_New(ufunc->nargs);
+        if (link == NULL || chain == NULL || op_map == NULL) {
+            goto fail;
+        }
+        for (iop = 0; iop < ufunc->nargs; iop++) {
+            index = PyLong_FromLong(iop);
+            PyList_SET_ITEM(op_map, iop, index);
+        }
+        PyTuple_SET_ITEM(link, 0, ufunc_obj);
+        PyTuple_SET_ITEM(link, 1, op_map);
+        PyList_SET_ITEM(chain, 0, link);
+        /* chain is new ref, all others put inside */
+    }
+    Py_DECREF(ufunc_obj);
+    return chain;
+
+fail:
+    Py_XDECREF(chain);
+    Py_XDECREF(link);
+    Py_XDECREF(op_map);
+    Py_DECREF(ufunc_obj);
+    return NULL;
+}
+
+
 static PyMethodDef ufunc_chain_methods[] = {
     {"create", (PyCFunction)create_ufunc_chain, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"get_chain", (PyCFunction)get_chain, METH_VARARGS | METH_KEYWORDS, NULL},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
