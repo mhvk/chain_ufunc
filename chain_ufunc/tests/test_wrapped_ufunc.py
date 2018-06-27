@@ -79,4 +79,5 @@ class TestOpMaps:
     def test_modf_modf(self):
         modf = np.modf(Input())
         modfmodf = modf | modf
-        assert modfmodf.op_maps == [[0, 1, 3], [1, 1, 2]]
+        assert modfmodf.links == [(np.modf, [0, 1, 3]),
+                                  (np.modf, [1, 1, 2])]
