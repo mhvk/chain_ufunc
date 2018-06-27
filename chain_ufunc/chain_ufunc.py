@@ -143,7 +143,8 @@ def create_chained_ufunc(ufuncs, op_maps, nin, nout, ntmp,
     implements = ">>> def {}\n".format("\n...     ".join(code_lines))
     doc = ("{}\n\nImplements:\n\n{}"
            .format(doc0, textwrap.indent(implements, "    ")))
-    return create_ufunc_chain(ufuncs, op_maps, nin, nout, ntmp, name, doc)
+    links = [tup2 for tup2 in zip(ufuncs, op_maps)]
+    return create_ufunc_chain(links, nin, nout, ntmp, name, doc)
 
 
 def parse_doc(doc):

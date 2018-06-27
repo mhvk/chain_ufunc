@@ -26,7 +26,7 @@ typedef struct {
     int nin;
     int nout;
     int ntmp;
-    int nufunc;
+    int nlink;
     PyUFuncObject **ufuncs;
     int *type_indices;
     int *op_indices;
@@ -46,7 +46,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     int ninout = chain_info->nin + chain_info->nout;
     char *tmp_mem = NULL;
     char **tmps = {NULL};
-    int iu;
+    int ilink;
     if (ntmp > 0) {
         int i;
         npy_intp s = ntmp * sizeof(*tmps);
@@ -64,15 +64,15 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
             tmps[i] = tmp_mem + s;
         }
     }
-    for (iu = 0; iu < chain_info->nufunc; iu++) {
-        int type_index = chain_info->type_indices[iu];
-        PyUFuncObject *ufunc = chain_info->ufuncs[iu];
+    for (ilink = 0; ilink < chain_info->nlink; ilink++) {
+        int type_index = chain_info->type_indices[ilink];
+        PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
         PyUFuncGenericFunction function = ufunc->functions[type_index];
         void *ufunc_data = ufunc->data[type_index];
         int nop = ufunc->nargs;
         int iop;
         for (iop = 0; iop < nop; iop++) {
-            /* printf("iu=%d, iop=%d, *index=%d\n", iu, iop, *index); */
+            /* printf("ilink=%d, iop=%d, *index=%d\n", ilink, iop, *index); */
             if (*index < ninout) {
                 ufunc_args[iop] = args[*index];
                 ufunc_steps[iop] = steps[*index];
@@ -97,34 +97,32 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     static PyTypeObject *ufunc_cls=NULL;
     /* Input arguments */
     char *kw_list[] = {
-        "ufuncs", "op_maps", "nin", "nout", "ntmp", "name", "doc", NULL};
-    PyObject *ufuncs_arg, *op_maps_arg;
+        "links", "nin", "nout", "ntmp", "name", "doc", NULL};
+    PyObject *links;
     int nin, nout, ntmp;
+    char *name=NULL, *doc=NULL;
     /* Output */
     PyUFuncObject *chained_ufunc=NULL;
     /* Directly inferred */
-    char *name=NULL, *doc=NULL;
     size_t name_len=-1, doc_len=-1;
-    PyObject *ufunc_tuple=NULL, *op_map_list=NULL;
-    int nufunc;
-    PyUFuncObject **ufuncs;
-    PyObject **op_maps;
+    PyObject *chain=NULL;
+    int nlink, nindices;
+    int *op_indices;
+    char* tmp_mem=NULL;
     /* Calculated */
-    int ntypes, nindices;
+    int ntypes;
     /* Counters */
-    int iu, itype, i;
+    int ilink, itype, i;
     /* Parts for which memory will be allocated */
     char *mem_ptr=NULL, *mem;
-    npy_intp mem_size, sizes[9];
+    npy_intp mem_size, sizes[10];
     PyUFuncGenericFunction *functions;
     void **data;
     char *types;
-    char *name_copy;
-    char *doc_copy;
+    PyUFuncObject **ufuncs;
     ufunc_chain_info *chain_info;
     npy_intp *tmp_steps;
     int *type_indices;
-    int *op_indices;
 
     if (ufunc_cls == NULL) {
         PyObject *mod = PyImport_ImportModule("numpy");
@@ -137,9 +135,8 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             return NULL;
         }
     }
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOiii|ss", kw_list,
-                                     &ufuncs_arg, &op_maps_arg,
-                                     &nin, &nout, &ntmp,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "Oiii|ss", kw_list,
+                                     &links, &nin, &nout, &ntmp,
                                      &name, &doc)) {
         return NULL;
     }
@@ -159,55 +156,92 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         doc_len = 0;
     }
     /*
-     * Interpret ufuncs argument as a sequence and create a new tuple
+     * Interpret links argument as a sequence and create a list
      * with its own references using them; we'll keep this with the
      * chained ufunc, thus ensuring all the ufuncs stay alive.
      */
-    nufunc = PySequence_Size(ufuncs_arg);
-    if (nufunc < 0) {
+    nlink = PySequence_Size(links);
+    if (nlink < 0) {
         goto fail;
     }
-    ufunc_tuple = PyTuple_New(nufunc);
-    if (ufunc_tuple == NULL) {
+    chain = PyList_New(nlink);
+    if (chain == NULL) {
         goto fail;
     }
-    for (iu = 0; iu < nufunc; iu++) {
-        PyObject *ufunc_obj = PySequence_GetItem(ufuncs_arg, iu);
-        PyUFuncObject *ufunc = (PyUFuncObject *)ufunc_obj;
-        /* Uses reference from GetItem above; DECREF'd if tuple is DECREF'd */
-        PyTuple_SetItem(ufunc_tuple, iu, ufunc_obj);
+    /*
+     * allocate temporary memory for op_indices.
+     * It gets a properly sized allocation below.
+     */
+    tmp_mem = PyArray_malloc(sizeof(*op_indices) * nlink *
+                             (nin + nout + ntmp));
+    if (tmp_mem == NULL) {
+        goto fail;
+    }
+    /*
+     * Get operand indices as flattened array
+     */
+    op_indices = (int *)tmp_mem;
+    nindices = 0;
+    for (ilink = 0; ilink < nlink; ilink++) {
+        PyUFuncObject *ufunc;
+        PyObject *op_map;
+        int iop, nop;
+        PyObject *link = PySequence_GetItem(links, ilink);
+        /* Transfers reference; DECREF'd if list is DECREF'd */
+        PyList_SET_ITEM(chain, ilink, link);
+        if (!PyTuple_Check(link)) {
+            goto fail;
+        }
+        if (PyTuple_Size(link) != 2) {
+            PyErr_SetString(PyExc_ValueError,
+                "each entry in 'chain' should be a tuple with 2 elements:"
+                "a ufunc and a list of operand indices");
+            goto fail;
+        }
+        ufunc = (PyUFuncObject *)PyTuple_GET_ITEM(link, 0);
         if (Py_TYPE(ufunc) != ufunc_cls || ufunc->core_enabled ||
                 ufunc->ptr != NULL || ufunc->obj != NULL) {
             PyErr_SetString(PyExc_TypeError,
-                            "every entry in 'ufuncs' should be a simple ufunc");
+                "only simply ufuncs can be used to make chains");
             goto fail;
         }
-    }
-    ufuncs = (PyUFuncObject **)PySequence_Fast_ITEMS(ufunc_tuple);
-    /*
-     * Check consistency with number of maps, and number of arguments inside.
-     */
-    op_map_list = PySequence_Fast(op_maps_arg,
-                                  "'op_maps' should be a sequence");
-    if (op_map_list == NULL) {
-        goto fail;
-    }
-    if (PySequence_Fast_GET_SIZE(op_map_list) != nufunc) {
-        PyErr_SetString(PyExc_ValueError,
-                        "'op_maps' must have as many entries as 'ufuncs'");
-        goto fail;
-    }
-    op_maps = PySequence_Fast_ITEMS(op_map_list);
-    for (iu = 0; iu < nufunc; iu++) {
-        PyObject *op_map = op_maps[iu];
-        int nop = PySequence_Size(op_map);
+        op_map = PyTuple_GET_ITEM(link, 1);
+        nop = PySequence_Size(op_map);
         if (nop < 0) {
             goto fail;
         }
-        if (nop != ufuncs[iu]->nargs) {
+        if (nop != ufunc->nargs) {
             PyErr_SetString(PyExc_ValueError,
-                "op_map sequence should contain entries for each ufunc operand");
+                "op_map sequence should contain an entry for each ufunc operand");
             goto fail;
+        }
+        for (iop = 0; iop < nop; iop++) {
+            int op_index;
+            PyObject *number;
+            int min_index = iop < ufunc->nin ? 0: nin;
+            PyObject *obj = PySequence_GetItem(op_map, iop);
+            if (obj == NULL) {
+                goto fail;
+            }
+            number = PyNumber_Index(obj);
+            Py_DECREF(obj);
+            if (number == NULL) {
+                goto fail;
+            }
+            op_index = PyLong_AsLong(number);
+            Py_DECREF(number);
+            if (op_index == -1 && PyErr_Occurred()) {
+                goto fail;
+            }
+            if (op_index < min_index  || op_index >= nin + nout + ntmp) {
+                PyErr_Format(PyExc_ValueError,
+                             "index %d outside of allowed range: "
+                             "%d - %d (nin=%d, nout=%d, ntmp=%d)",
+                             op_index, min_index, nin + nout + ntmp,
+                             nin, nout, ntmp);
+                goto fail;
+            }
+            op_indices[nindices++] = op_index;
         }
     }
     /*
@@ -222,16 +256,16 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     /* basic information for the new chained ufunc itself */
     sizes[i++] = sizeof(*functions) * ntypes;
     sizes[i++] = sizeof(*data) * ntypes;
-    sizes[i++] = sizeof(*types) * (nin + nout) * ntypes;
-    sizes[i++] = sizeof(*name_copy) * (name_len + 1);
-    sizes[i++] = sizeof(*doc_copy) * (doc_len + 1);
+    sizes[i++] = sizeof(*types) * ntypes * (nin + nout);
+    /* the ufuncs being chained and where to get/put their operands */
+    sizes[i++] = sizeof(*ufuncs) * nlink;
+    sizes[i++] = sizeof(*op_indices) * nindices;
     /* for each type, information on the chain inside */
     sizes[i++] = sizeof(*chain_info) * ntypes;
     sizes[i++] = sizeof(*tmp_steps) * ntypes * ntmp;
-    sizes[i++] = sizeof(*type_indices) * ntypes * nufunc;
-    /* where to get/put ufunc operands (type-independent) */
-    /* Note: overallocates, but it's not too much memory */
-    sizes[i++] = sizeof(*op_indices) * nufunc * (nin + nout + ntmp);
+    sizes[i++] = sizeof(*type_indices) * ntypes * nlink;
+    sizes[i++] = sizeof(*name) * (name_len + 1);
+    sizes[i++] = sizeof(*doc) * (doc_len + 1);
     /* calculate total size, ensuring each piece is 8-byte aligned */
     mem_size = 0;
     for (i--; i >= 0; i--) {
@@ -253,9 +287,11 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     mem += sizes[i++];
     types = (char *)mem;
     mem += sizes[i++];
-    name_copy = (char *)mem;
+    ufuncs = (PyUFuncObject **)mem;
     mem += sizes[i++];
-    doc_copy = (char *)mem;
+    /* Copy op_indices from temporary memory allocation */
+    memcpy(mem, tmp_mem, sizeof(*op_indices) * nindices);
+    op_indices = (int *)mem;
     mem += sizes[i++];
     chain_info = (ufunc_chain_info *)mem;
     mem += sizes[i++];
@@ -263,45 +299,17 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     mem += sizes[i++];
     type_indices = (int *)mem;
     mem += sizes[i++];
-    op_indices = (int *)mem;
-
-    strncpy(name_copy, name, name_len + 1);
-    strncpy(doc_copy, doc, doc_len + 1);
-    /*
-     * Get operand indices as flattened array
-     */
-    nindices = 0;
-    for (iu = 0; iu < nufunc; iu++) {
-        PyUFuncObject *ufunc = ufuncs[iu];
-        PyObject *op_map = op_maps[iu];
-        int nop = ufunc->nargs;
-        int iop;
-        for (iop = 0; iop < nop; iop++) {
-            int op_index;
-            PyObject *number;
-            PyObject *obj = PySequence_GetItem(op_map, iop);
-            if (obj == NULL) {
-                goto fail;
-            }
-            number = PyNumber_Index(obj);
-            Py_DECREF(obj);
-            if (number == NULL) {
-                goto fail;
-            }
-            op_index = PyLong_AsLong(number);
-            Py_DECREF(number);
-            if (op_index == -1 && PyErr_Occurred()) {
-                goto fail;
-            }
-            if (op_index < 0 || op_index >= nin + nout + ntmp) {
-                PyErr_Format(PyExc_ValueError,
-                             "index %d larger than maximum allowed: "
-                             "nin+nout+ntmp=%d+%d+%d=%d",
-                             op_index, nin, nout, ntmp, nin + nout + ntmp);
-                goto fail;
-            }
-            op_indices[nindices++] = op_index;
-        }
+    /* For name and doc, again copy information we have */
+    strncpy(mem, name, name_len + 1);
+    name = (char *)mem;
+    mem += sizes[i++];
+    strncpy(mem, doc, doc_len + 1);
+    doc = (char *)mem;
+    /* fill ufuncs array */
+    for (ilink = 0; ilink < nlink; ilink++) {
+        PyObject *link = PyList_GET_ITEM(chain, ilink);
+        PyUFuncObject *ufunc = (PyUFuncObject *)PyTuple_GET_ITEM(link, 0);
+        ufuncs[ilink] = ufunc;
     }
     /*
      * Set up ufunc information for each type (just DOUBLE for now).
@@ -318,17 +326,17 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         chain_info[itype].nin = nin;
         chain_info[itype].nout = nout;
         chain_info[itype].ntmp = ntmp;
-        chain_info[itype].nufunc = nufunc;
+        chain_info[itype].nlink = nlink;
         chain_info[itype].ufuncs = ufuncs;
-        chain_info[itype].type_indices = type_indices + itype * nufunc;
+        chain_info[itype].type_indices = type_indices + itype * nlink;
         chain_info[itype].op_indices = op_indices;
         chain_info[itype].tmp_steps = ntmp > 0 ? tmp_steps + itype * ntmp: NULL;
         for (i = 0; i < ntmp; i++) {
             chain_info[itype].tmp_steps[i] = sizeof(double);
         }
         /* find ufunc loop with correct type, and store in type_indices */
-        for (iu = 0; iu < nufunc; iu++) {
-            PyUFuncObject *ufunc = ufuncs[iu];
+        for (ilink = 0; ilink < nlink; ilink++) {
+            PyUFuncObject *ufunc = ufuncs[ilink];
             for (i = 0; i < ufunc->ntypes; i++) {
                 int it = i * ufunc->nargs;
                 if (ufunc->types[it] == NPY_DOUBLE) {
@@ -341,31 +349,28 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                              ufunc->name);
                 goto fail;
             }
-            chain_info[itype].type_indices[iu] = i;
+            chain_info[itype].type_indices[ilink] = i;
         }
     }
     chained_ufunc = (PyUFuncObject *)PyUFunc_FromFuncAndData(
         functions, data, types, ntypes,
-        nin, nout, PyUFunc_None, name_copy, doc, 0);
+        nin, nout, PyUFunc_None, name, doc, 0);
     /*
      * We need to keep ufunc_tuple and mem_ptr around, as they have the
      * required information, but they should be deallocated when the ufunc
      * is deleted. Use ->obj and ->ptr for this (also used in frompyfunc).
      */
-    chained_ufunc->obj = ufunc_tuple;
+    chained_ufunc->obj = chain;
     chained_ufunc->ptr = mem_ptr;
-    Py_DECREF(op_map_list);
-    Py_DECREF(op_maps_arg);
-    Py_DECREF(ufuncs_arg);
-    ufuncs = (PyUFuncObject **)PySequence_Fast_ITEMS(chained_ufunc->obj);
+    PyArray_free(tmp_mem);
+    Py_DECREF(links);
     return (PyObject *)chained_ufunc;
 
   fail:
     PyArray_free(mem_ptr);
-    Py_XDECREF(ufunc_tuple);
-    Py_XDECREF(ufuncs_arg);
-    Py_XDECREF(op_map_list);
-    Py_XDECREF(op_maps_arg);
+    PyArray_free(tmp_mem);
+    Py_XDECREF(chain);
+    Py_XDECREF(links);
     return NULL;
 }
 
