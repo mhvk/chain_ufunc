@@ -91,10 +91,28 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 }
 
 
+static PyTypeObject *ufunc_cls=NULL;
+
+static PyTypeObject *get_ufunc_cls()
+{
+    if (ufunc_cls == NULL) {
+        PyObject *mod = PyImport_ImportModule("numpy");
+        if (mod == NULL) {
+            return NULL;
+        }
+        ufunc_cls = (PyTypeObject*)PyObject_GetAttrString(mod, "ufunc");
+        Py_DECREF(mod);
+        if (ufunc_cls == NULL) {
+            return NULL;
+        }
+    }
+    return ufunc_cls;
+}
+
+
 static PyObject *
 create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 {
-    static PyTypeObject *ufunc_cls=NULL;
     /* Input arguments */
     char *kw_list[] = {
         "links", "nin", "nout", "ntmp", "name", "doc", NULL};
@@ -123,18 +141,8 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     ufunc_chain_info *chain_info;
     npy_intp *tmp_steps;
     int *type_indices;
+    PyTypeObject *ufunc_cls = get_ufunc_cls();
 
-    if (ufunc_cls == NULL) {
-        PyObject *mod = PyImport_ImportModule("numpy");
-        if (mod == NULL) {
-            return NULL;
-        }
-        ufunc_cls = (PyTypeObject*)PyObject_GetAttrString(mod, "ufunc");
-        Py_DECREF(mod);
-        if (ufunc_cls == NULL) {
-            return NULL;
-        }
-    }
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "Oiii|ss", kw_list,
                                      &links, &nin, &nout, &ntmp,
                                      &name, &doc)) {
@@ -373,6 +381,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     Py_XDECREF(links);
     return NULL;
 }
+
 
 static PyMethodDef ufunc_chain_methods[] = {
     {"create", (PyCFunction)create_ufunc_chain, METH_VARARGS | METH_KEYWORDS, NULL},
