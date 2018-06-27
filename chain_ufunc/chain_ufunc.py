@@ -2,10 +2,21 @@ import textwrap
 import itertools
 import numpy as np
 
-from ufunc_chain import create as create_ufunc_chain, get_chain
 
 __all__ = ['ChainedUfunc', 'create_chained_ufunc', 'get_chain',
            'create_from_doc', 'WrappedUfunc', 'Input', 'Output']
+
+USE_UFUNC_CHAIN = True
+if USE_UFUNC_CHAIN:
+    from ufunc_chain import create as create_ufunc_chain, get_chain
+else:
+    def create_ufunc_chain(*args, **kwargs):
+        return ChainedUfunc(*args, **kwargs)
+
+    def get_chain(ufunc):
+        if isinstance(ufunc, np.ufunc):
+            ufunc = WrappedUfunc(ufunc)
+        return ufunc.links
 
 
 class ChainedUfunc(object):
@@ -13,21 +24,19 @@ class ChainedUfunc(object):
 
     Parameters
     ----------
-    ufuncs : list of ufuc
-        Ufuncs to calculate, in order.
-    op_maps : list of list of int
-        For each ufunc, indices of where to get its inputs and put its
-        outputs.  The indices to the chained ufuncs nin point to actual
-        inputs, those beyond to first outputs, and then any temporaries.
+    links : list of tuples of (ufunc, list of int)
+        Ufuncs to calculate, in order, with indices of where to get its
+        inputs and put its outputs.  The indices to the chained ufuncs
+        nin point to actual inputs, those beyond to first outputs, and
+        then any temporaries.
     nin, nout, ntmp : int
-        total number of inputs, outputs and temporary arrays
+        Total number of inputs, outputs and temporary arrays
     name : str
         Name of the chained ufunc.
     """
-    def __init__(self, ufuncs, op_maps, nin, nout, ntmp,
+    def __init__(self, links, nin, nout, ntmp,
                  name='ufunc_chain', doc=None):
-        self.ufuncs = ufuncs
-        self.op_maps = op_maps
+        self.links = links
         self.nin = nin
         self.nout = nout
         self.ntmp = ntmp
@@ -80,7 +89,7 @@ class ChainedUfunc(object):
             temporaries = []
 
         arrays = inputs + outputs + temporaries
-        for ufunc, op_map in zip(self.ufuncs, self.op_maps):
+        for ufunc, op_map in self.links:
             ufunc_inout = [arrays[i] for i in op_map]
             # As we work in-place, result is not needed.
             ufunc(*ufunc_inout)
@@ -90,13 +99,11 @@ class ChainedUfunc(object):
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
     def __repr__(self):
-        return ("ChainedUfunc(ufuncs={ufuncs}, "
-                "op_maps={op_maps}, "
+        return ("ChainedUfunc(links={links}, "
                 "nin={nin}, "
                 "nout={nout}, "
                 "ntmp={ntmp})").format(
-                    ufuncs=self.ufuncs,
-                    op_maps=self.op_maps,
+                    links=self.links,
                     nin=self.nin,
                     nout=self.nout,
                     ntmp=self.ntmp)
