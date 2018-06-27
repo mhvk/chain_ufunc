@@ -122,7 +122,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     PyUFuncObject *chained_ufunc=NULL;
     /* Directly inferred */
     size_t name_len=-1, doc_len=-1;
-    PyObject *chain=NULL;
+    PyObject *ufunc_list=NULL;
     int nlink, nindices;
     /* Calculated */
     int ntypes;
@@ -130,7 +130,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     int ilink, itype, i;
     /* Parts for which memory will be allocated */
     char *ufunc_mem=NULL, *mem;
-    npy_intp mem_size, sizes[10];
+    npy_intp mem_size, sizes[9];
     PyUFuncGenericFunction *functions;
     void **data;
     char *types;
@@ -162,29 +162,27 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         doc_len = 0;
     }
     /*
-     * Interpret links argument as a sequence and create a list
-     * with its own references using them; we'll keep this with the
-     * chained ufunc, thus ensuring all the ufuncs stay alive.
+     * Get number of links and create a list to hold references to the ufuncs.
+     * This will be our array of ufuncs, and by keeping the list with the
+     * chained ufunc, we also ensure they stay alive.
      */
-    nlink = PySequence_Size(links);
+    nlink = PyList_Size(links);
     if (nlink < 0) {
         goto fail;
     }
-    chain = PyList_New(nlink);
-    if (chain == NULL) {
+    ufunc_list = PyList_New(nlink);
+    if (ufunc_list == NULL) {
         goto fail;
     }
     /*
-     * Get operand indices as flattened array
+     * Get ufuncs as well as the operand indices as flattened array.
      */
     nindices = 0;
     for (ilink = 0; ilink < nlink; ilink++) {
+        PyObject *ufunc_obj, *op_map;
         PyUFuncObject *ufunc;
-        PyObject *op_map;
         int nop;
-        PyObject *link = PySequence_GetItem(links, ilink);
-        /* Transfers reference; DECREF'd if list is DECREF'd */
-        PyList_SET_ITEM(chain, ilink, link);
+        PyObject *link = PyList_GET_ITEM(links, ilink);
         if (!PyTuple_Check(link)) {
             goto fail;
         }
@@ -194,8 +192,9 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                 "a ufunc and a list of operand indices");
             goto fail;
         }
-        ufunc = (PyUFuncObject *)PyTuple_GET_ITEM(link, 0);
-        if (Py_TYPE(ufunc) != ufunc_cls || ufunc->core_enabled ||
+        ufunc_obj = PyTuple_GET_ITEM(link, 0);
+        ufunc = (PyUFuncObject *)ufunc_obj;
+        if (Py_TYPE(ufunc_obj) != ufunc_cls || ufunc->core_enabled ||
                 ufunc->ptr != NULL || ufunc->obj != NULL) {
             PyErr_SetString(PyExc_TypeError,
                 "only simply ufuncs can be used to make chains");
@@ -211,8 +210,12 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                 "op_map sequence should contain an entry for each ufunc operand");
             goto fail;
         }
+        Py_INCREF(ufunc_obj);
+        PyList_SET_ITEM(ufunc_list, ilink, ufunc_obj);
         nindices += nop;
     }
+    /* Get ufuncs as array */
+    ufuncs = (PyUFuncObject **)PySequence_Fast_ITEMS(ufunc_list);
     /*
      * Here, there should be a proper routine determine the number
      * of possible independent types.  For now, just NPY_DOUBLE.
@@ -226,15 +229,14 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     sizes[i++] = sizeof(*functions) * ntypes;
     sizes[i++] = sizeof(*data) * ntypes;
     sizes[i++] = sizeof(*types) * ntypes * (nin + nout);
-    /* the ufuncs being chained and where to get/put their operands */
-    sizes[i++] = sizeof(*ufuncs) * nlink;
+    sizes[i++] = sizeof(*name) * (name_len + 1);
+    sizes[i++] = sizeof(*doc) * (doc_len + 1);
+    /* Chain information: where to get/put ufunc operands */
     sizes[i++] = sizeof(*op_indices) * nindices;
-    /* for each type, information on the chain inside */
+    /* for each type, information for the loops inside */
     sizes[i++] = sizeof(*chain_info) * ntypes;
     sizes[i++] = sizeof(*tmp_steps) * ntypes * ntmp;
     sizes[i++] = sizeof(*type_indices) * ntypes * nlink;
-    sizes[i++] = sizeof(*name) * (name_len + 1);
-    sizes[i++] = sizeof(*doc) * (doc_len + 1);
     /* calculate total size, ensuring each piece is 8-byte aligned */
     mem_size = 0;
     for (i--; i >= 0; i--) {
@@ -250,15 +252,19 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     /* Assign appropriately */
     mem = ufunc_mem;
     i = 0;
+    /* Basic information for the new chained ufunc itself */
     functions = (PyUFuncGenericFunction *)mem;
     mem += sizes[i++];
     data = (void **)mem;
     mem += sizes[i++];
     types = (char *)mem;
     mem += sizes[i++];
-    ufuncs = (PyUFuncObject **)mem;
+    /* For name and doc, copy information we have */
+    name = strncpy(mem, name, name_len + 1);
     mem += sizes[i++];
-    /* Copy op_indices from temporary memory allocation */
+    doc = strncpy(mem, doc, doc_len + 1);
+    mem += sizes[i++];
+    /* Chain information */
     op_indices = (int *)mem;
     mem += sizes[i++];
     chain_info = (ufunc_chain_info *)mem;
@@ -266,19 +272,15 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     tmp_steps = (npy_intp *)mem;
     mem += sizes[i++];
     type_indices = (int *)mem;
-    mem += sizes[i++];
-    /* For name and doc, again copy information we have */
-    name = strncpy(mem, name, name_len + 1);
-    mem += sizes[i++];
-    doc = strncpy(mem, doc, doc_len + 1);
-    /* fill ufuncs array */
+    /*
+     * Fill operand indices array.
+     */
     nindices = 0;
     for (ilink = 0; ilink < nlink; ilink++) {
         int iop;
-        PyObject *link = PyList_GET_ITEM(chain, ilink);
-        PyUFuncObject *ufunc = (PyUFuncObject *)PyTuple_GET_ITEM(link, 0);
+        PyUFuncObject *ufunc = ufuncs[ilink];
+        PyObject *link = PyList_GET_ITEM(links, ilink);
         PyObject *op_map = PyTuple_GET_ITEM(link, 1);
-        ufuncs[ilink] = ufunc;
         for (iop = 0; iop < ufunc->nargs; iop++) {
             int op_index;
             PyObject *number;
@@ -357,13 +359,13 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
      * required information, but they should be deallocated when the ufunc
      * is deleted. Use ->obj and ->ptr for this (also used in frompyfunc).
      */
-    chained_ufunc->obj = chain;
+    chained_ufunc->obj = ufunc_list;
     chained_ufunc->ptr = ufunc_mem;
     return (PyObject *)chained_ufunc;
 
   fail:
     PyArray_free(ufunc_mem);
-    Py_XDECREF(chain);
+    Py_XDECREF(ufunc_list);
     return NULL;
 }
 
@@ -372,56 +374,78 @@ static PyObject *
 get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 {
     char *kw_list[] = {"ufunc", NULL};
-    PyObject *ufunc_obj;
-    PyUFuncObject *ufunc;
-    PyObject *chain=NULL, *link=NULL, *op_map=NULL, *index;
-    int iop;
+    PyObject *chained_ufunc_obj;
+    PyUFuncObject *chained_ufunc;
+    ufunc_chain_info *chain_info;
+    int nlink;
+    PyUFuncObject *ufunc_array[1];
+    PyUFuncObject **ufuncs = ufunc_array;
+    int *op_indices = NULL;
+    int ilink;
+    PyObject *links=NULL, *link=NULL, *op_map=NULL;
     PyTypeObject *ufunc_cls = get_ufunc_cls();
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O", kw_list, &ufunc_obj)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O", kw_list,
+                                     &chained_ufunc_obj)) {
         return NULL;
     }
-    ufunc = (PyUFuncObject *)ufunc_obj;
-    if (Py_TYPE(ufunc) != ufunc_cls || ufunc->core_enabled) {
+    chained_ufunc = (PyUFuncObject *)chained_ufunc_obj;
+    if (Py_TYPE(chained_ufunc_obj) != ufunc_cls ||
+            chained_ufunc->core_enabled) {
         PyErr_SetString(PyExc_TypeError,
             "can only get chain for non-generalized ufuncs");
-        goto fail;
+        return NULL;
     }
-    if (ufunc->obj) {
-        if (!PyList_Check(ufunc->obj) || PyList_Size(ufunc->obj) < 1 ||
-            !PyTuple_Check(PyList_GET_ITEM(ufunc->obj, 0))) {
+    if (chained_ufunc->obj) {
+        if (!PyList_Check(chained_ufunc->obj)) {
             PyErr_SetString(PyExc_ValueError,
                             "ufunc does not contain chain list with "
                             "tuple elements.");
-            goto fail;
+            return NULL;
         }
-        chain = ufunc->obj;
-        Py_INCREF(chain);
+        chain_info = (ufunc_chain_info *)chained_ufunc->data[0];
+        nlink = chain_info->nlink;
+        ufuncs = chain_info->ufuncs;
+        op_indices = chain_info->op_indices;
     }
     else {
         /* simple ufunc, create 1-element chain */
-        chain = PyList_New(1);
+        nlink = 1;
+        ufuncs[0] = chained_ufunc;
+    }
+    links = PyList_New(nlink);
+    if (links == NULL) {
+        return NULL;
+    }
+    for (ilink = 0; ilink < nlink; ilink++) {
+        int iop;
+        PyUFuncObject *ufunc = ufuncs[ilink];
+        PyObject *ufunc_obj = (PyObject *)ufunc;
+        int nop = ufunc->nargs;
         link = PyTuple_New(2);
-        op_map = PyList_New(ufunc->nargs);
-        if (link == NULL || chain == NULL || op_map == NULL) {
+        op_map = PyList_New(nop);
+        if (link == NULL || op_map == NULL) {
             goto fail;
         }
-        for (iop = 0; iop < ufunc->nargs; iop++) {
-            index = PyLong_FromLong(iop);
-            PyList_SET_ITEM(op_map, iop, index);
+        for (iop = 0; iop < nop; iop++) {
+            int index = op_indices ? *op_indices++: iop;
+            PyObject *index_obj = PyLong_FromLong(index);
+            if (index_obj == NULL) {
+                goto fail;
+            }
+            PyList_SET_ITEM(op_map, iop, index_obj);
         }
         Py_INCREF(ufunc_obj);
         PyTuple_SET_ITEM(link, 0, ufunc_obj);
         PyTuple_SET_ITEM(link, 1, op_map);
-        PyList_SET_ITEM(chain, 0, link);
-        /* chain is new ref, all others put inside */
+        PyList_SET_ITEM(links, ilink, link);
     }
-    return chain;
+    return links;
 
-fail:
-    Py_XDECREF(chain);
-    Py_XDECREF(link);
+  fail:
+    Py_DECREF(links);
     Py_XDECREF(op_map);
+    Py_XDECREF(link);
     return NULL;
 }
 
