@@ -1,0 +1,18 @@
+[project]
+name = 'chain_ufunc'
+version = '0.1.0'
+description = 'Create chains of ufuncs that calculate on chunks of data at a time'
+readme = 'README.rst'
+requires-python = '>=3.9'
+license = { file = 'LICENSE' }
+author = 'Marten H. van Kerkwijk'
+project_urls = [
+    { Source = 'https://github.com/mhvk/chain_ufunc' }
+]
+dependencies = [
+    "numpy",
+]
+
+[build-system]
+build-backend = 'mesonpy'
+requires = ['meson-python']
