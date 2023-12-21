@@ -1,9 +1,10 @@
 import numpy as np
-from .. import Input
+from chain_ufunc import Input
 
 
 class TestSimple:
-    def setup(self):
+    @classmethod
+    def setup_class(self):
         self.degrees = np.array([0., 30., 90., 150., 180.,
                                  210., 270., 330., 360.])
         self.deg2rad = np.array(np.pi/180.)
@@ -46,7 +47,8 @@ class TestSimple:
 
 
 class TestIndexing:
-    def setup(self):
+    @classmethod
+    def setup_class(self):
         self.in1 = np.array([1.5, 2.])
 
     def test_two_output_indexing(self):

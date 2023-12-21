@@ -1,5 +1,5 @@
 import numpy as np
-from .. import Input, Output
+from chain_ufunc import Input, Output
 
 
 class TestSimple:

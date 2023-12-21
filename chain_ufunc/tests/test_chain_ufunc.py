@@ -1,5 +1,5 @@
 import numpy as np
-from .. import create_chained_ufunc, create_from_doc, get_chain
+from chain_ufunc import create_chained_ufunc, create_from_doc, get_chain
 
 
 class TestGetChain:
@@ -21,7 +21,8 @@ class TestGetChain:
 
 
 class TestSimple:
-    def setup(self):
+    @classmethod
+    def setup_class(self):
         self.degrees = np.array([0., 30., 90., 150., 180.,
                                  210., 270., 330., 360.])
         self.deg2rad = np.array(np.pi/180.)

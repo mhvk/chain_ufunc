@@ -8,7 +8,7 @@ __all__ = ['ChainedUfunc', 'create_chained_ufunc', 'get_chain',
 
 USE_UFUNC_CHAIN = True
 if USE_UFUNC_CHAIN:
-    from ufunc_chain import create as create_ufunc_chain, get_chain
+    from .ufunc_chain import create as create_ufunc_chain, get_chain
 else:
     def create_ufunc_chain(*args, **kwargs):
         return ChainedUfunc(*args, **kwargs)
