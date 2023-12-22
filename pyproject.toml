@@ -15,12 +15,15 @@ repository = 'https://github.com/mhvk/chain_ufunc'
 
 [build-system]
 build-backend = 'mesonpy'
-requires = ['meson-python']
+requires = [
+  'meson-python',
+  'numpy',
+]
 
 [project.optional-dependencies]
 test = [
-    "pytest>=7.0",
-    "pytest-doctestplus>=0.12",
+    "pytest",
+    "pytest-doctestplus",
 ]
 all = [
     "graphviz",
