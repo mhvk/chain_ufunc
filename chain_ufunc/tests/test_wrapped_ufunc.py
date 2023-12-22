@@ -17,8 +17,8 @@ class TestSimple:
     def test_three_functions(self):
         mulsinarcsin = np.arcsin(np.sin(np.multiply(Input(), Input())))
         tst = mulsinarcsin(self.degrees, self.deg2rad)
-        assert np.allclose(tst, np.arcsin(np.sin(self.degrees *
-                                                 self.deg2rad)))
+        assert np.allclose(tst, np.arcsin(np.sin(self.degrees
+                                                 * self.deg2rad)))
 
     def test_function_of_two_functions(self):
         sincosarctan2 = np.arctan2(np.sin(Input()), np.cos(Input()))
@@ -65,8 +65,8 @@ class TestIndexing:
         assert np.all(tst == np.modf(self.in1)[0] * np.modf(self.in1)[1])
         modfaddmodf = np.modf(np.add(*np.modf(Input())))
         tst = modfaddmodf(self.in1)
-        assert (np.all(tst[0] == np.modf(self.in1)[0]) and
-                np.all(tst[1] == np.modf(self.in1)[1]))
+        assert (np.all(tst[0] == np.modf(self.in1)[0])
+                and np.all(tst[1] == np.modf(self.in1)[1]))
 
 
 class TestIdentities:

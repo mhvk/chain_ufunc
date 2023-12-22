@@ -47,8 +47,8 @@ class ChainedUfunc:
             self.__doc__ = doc
 
     def __eq__(self, other):
-        return (type(other) is type(self) and
-                self.__dict__ == other.__dict__)
+        return (type(other) is type(self)
+                and self.__dict__ == other.__dict__)
 
     def __call__(self, *args, **kwargs):
         """Evaluate the ufunc.
@@ -230,9 +230,9 @@ class WrappedUfunc:
                 for i in range(self.nargs+self.ntmp)]
 
     def __eq__(self, other):
-        return (type(self) is type(other) and
-                all(v == other.__dict__[k]
-                    for k, v in self.__dict__.items() if k != 'ufunc'))
+        return (type(self) is type(other)
+                and all(v == other.__dict__[k]
+                        for k, v in self.__dict__.items() if k != 'ufunc'))
 
     def __call__(self, *args, **kwargs):
         """Evaluate the ufunc.
@@ -259,28 +259,28 @@ class WrappedUfunc:
 
         # first adjust the input and output maps for self
         self_maps = self._adjusted_maps(
-            [0]*self.nin +
-            [other.nin]*self.nout +
-            [other.nin + other.nout]*self.ntmp)
+            [0]*self.nin
+            + [other.nin]*self.nout
+            + [other.nin + other.nout]*self.ntmp)
         other_maps = other._adjusted_maps(
-            [self.nin]*other.nin +
-            [self.nin + self.nout]*(other.nout + other.ntmp))
+            [self.nin]*other.nin
+            + [self.nin + self.nout]*(other.nout + other.ntmp))
 
         in_names = self.names[:self.nin] + other.names[:other.nin]
-        out_names = (self.names[self.nin:self.nargs] +
-                     other.names[other.nin:other.nargs])
+        out_names = (self.names[self.nin:self.nargs]
+                     + other.names[other.nin:other.nargs])
         tmp_names = [(o_n if s_n is None else s_n)
                      for (s_n, o_n) in itertools.zip_longest(
-                             self.names[self.nargs:],
-                             other.names[other.nargs:])]
-        links = [(l[0], m) for l, m in zip(self.links + other.links,
-                                           self_maps + other_maps)]
+                         self.names[self.nargs:],
+                         other.names[other.nargs:])]
+        links = [(link[0], map_)
+                 for link, map_ in zip(self.links + other.links,
+                                       self_maps + other_maps)]
         return self.from_chain(links,
                                self.nin + other.nin,
                                self.nout + other.nout,
                                max(self.ntmp, other.ntmp),
-                               names=(in_names + out_names +
-                                      tmp_names))
+                               names=(in_names + out_names + tmp_names))
 
     def __or__(self, other):
         if isinstance(other, (ChainedUfunc, np.ufunc)):
@@ -300,19 +300,19 @@ class WrappedUfunc:
         # For the maps before the appending, we just need to add offsets
         # so that any new inputs can be accomodated. Note that some outputs
         # may become temporaries or vice versa; that's OK.
-        self_offsets = ([0]*self.nin +
-                        [extra_nin]*n_other_in_from_self_out +
-                        [extra_nin+extra_nout]*(self.nout + self.ntmp -
-                                                n_other_in_from_self_out))
+        self_offsets = ([0]*self.nin
+                        + [extra_nin]*n_other_in_from_self_out
+                        + [extra_nin+extra_nout]*(self.nout + self.ntmp
+                                                  - n_other_in_from_self_out))
         self_op_maps = self._adjusted_maps(self_offsets)
 
         # Now see how the number of outputs changes relative to other.
         nout = other.nout + extra_nout
         other_offsets = (
-            [nin]*n_other_in_from_self_out +
-            [self.nin - n_other_in_from_self_out]*extra_nin +
-            [nin - other.nin]*other.nout +
-            [nin - other.nin + extra_nout]*other.ntmp)
+            [nin]*n_other_in_from_self_out
+            + [self.nin - n_other_in_from_self_out]*extra_nin
+            + [nin - other.nin]*other.nout
+            + [nin - other.nin + extra_nout]*other.ntmp)
 
         other_op_maps = other._adjusted_maps(other_offsets)
 
@@ -334,8 +334,9 @@ class WrappedUfunc:
         return self.from_chain(links, nin, nout, ntmp, names=names)
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
-        can_handle = ('out' not in kwargs and method == '__call__' and
-                      all(isinstance(a, WrappedUfunc) for a in inputs))
+        can_handle = ('out' not in kwargs
+                      and method == '__call__'
+                      and all(isinstance(a, WrappedUfunc) for a in inputs))
         return can_handle
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
@@ -442,10 +443,10 @@ class InOut:
 
 class Input(InOut):
     def _can_handle(self, method, *inputs, **kwargs):
-        can_handle = (method == '__call__' and
-                      all(isinstance(a, (Input, WrappedUfunc))
-                          for a in inputs) and
-                      'out' not in kwargs)
+        can_handle = (method == '__call__'
+                      and all(isinstance(a, (Input, WrappedUfunc))
+                              for a in inputs)
+                      and 'out' not in kwargs)
         return can_handle
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
@@ -467,20 +468,19 @@ class Input(InOut):
             result |= ufunc
             names = result.names
             if input_first:
-                op_maps = result._adjusted_maps([1]*result.nin +
-                                                [0]*(result.nout +
-                                                     result.ntmp))
+                op_maps = result._adjusted_maps(
+                    [1]*result.nin + [0]*(result.nout + result.ntmp))
                 op_maps[-1][ufunc.nin-1] = 0
-                names[:result.nin] = ([input_.name] +
-                                      result.names[:result.nin-1])
+                names[:result.nin] = ([input_.name]
+                                      + result.names[:result.nin-1])
             else:
-                op_maps = [l[1] for l in result.links]
+                op_maps = [link[1] for link in result.links]
                 names[result.ufunc.nin - 1] = input_.name
 
         else:
             result = WrappedUfunc(ufunc)
             names = [a.name for a in inputs] + result.names[ufunc.nin:]
-            op_maps = [l[1] for l in result.links]
+            op_maps = [link[1] for link in result.links]
             if len(names) - names.count(None) != len(set(names) - {None}):
                 raise NotImplementedError("duplicate names")
 
@@ -494,12 +494,12 @@ class Input(InOut):
 
 class Output(InOut):
     def _can_handle(self, method, *inputs, **kwargs):
-        can_handle = (method == '__call__' and
-                      all(isinstance(a, (Input, WrappedUfunc))
-                          for a in inputs) and
-                      'out' in kwargs and
-                      all(a is None or isinstance(a, Output)
-                          for a in kwargs['out']))
+        can_handle = (method == '__call__'
+                      and all(isinstance(a, (Input, WrappedUfunc))
+                              for a in inputs)
+                      and 'out' in kwargs
+                      and all(a is None or isinstance(a, Output)
+                              for a in kwargs['out']))
         return can_handle
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
