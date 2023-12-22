@@ -7,6 +7,6 @@ Example:
 
   >>> import numpy as np
   >>> from chain_ufunc import create_chained_ufunc
-  >>> muladd = create_chained_ufunc([(np.multiply, [1, 2, 3]), (np.add, [1, 3, 3])], 3, 1, 0, "muladd")
+  >>> muladd = create_chained_ufunc([(np.multiply, [0, 1, 3]), (np.add, [2, 3, 3])], 3, 1, 0, "muladd")
   >>> muladd([0., 2., 1.], [4., 1., 6.], 0.1)
-  array([4.4, 1.1, 6.6])
+  array([0.1, 2.1, 6.1])

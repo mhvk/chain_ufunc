@@ -19,7 +19,7 @@ else:
         return ufunc.links
 
 
-class ChainedUfunc(object):
+class ChainedUfunc:
     """A chain of ufuncs that are evaluated in turn.
 
     Parameters
@@ -192,7 +192,7 @@ def create_from_doc(doc):
     return create_chained_ufunc(*parse_doc(doc))
 
 
-class WrappedUfunc(object):
+class WrappedUfunc:
     """Wraps a ufunc so it can be used to construct chains.
 
     Parameters
@@ -434,7 +434,7 @@ class WrappedUfunc(object):
         return dg
 
 
-class InOut(object):
+class InOut:
     def __init__(self, name=None):
         self.name = name
         self.names = [name]

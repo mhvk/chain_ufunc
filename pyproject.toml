@@ -6,13 +6,32 @@ readme = 'README.rst'
 requires-python = '>=3.9'
 license = { file = 'LICENSE' }
 author = 'Marten H. van Kerkwijk'
-project_urls = [
-    { Source = 'https://github.com/mhvk/chain_ufunc' }
-]
 dependencies = [
     "numpy",
 ]
 
+[project.urls]
+repository = 'https://github.com/mhvk/chain_ufunc'
+
 [build-system]
 build-backend = 'mesonpy'
 requires = ['meson-python']
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-doctestplus>=0.12",
+]
+all = [
+    "graphviz",
+]
+
+[tool.pytest.ini_options]
+minversion = 7.0
+testpaths = [
+    "chain_ufunc",
+    "README.rst",
+]
+filterwarnings = [
+    "error",
+]
