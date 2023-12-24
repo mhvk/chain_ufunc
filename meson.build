@@ -20,6 +20,7 @@ inc_np = include_directories(incdir_numpy)
 
 c_sources = ['chain_ufunc/ufunc_chain.c']
 
+# add_global_arguments('-DCHAIN_DEBUG', language : 'c')
 py.extension_module('ufunc_chain',
   c_sources,
   install: true,

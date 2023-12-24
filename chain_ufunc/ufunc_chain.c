@@ -37,24 +37,24 @@ typedef struct {
 static void
 inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 {
-    int n = dimensions[0];
+    npy_intp ntot = dimensions[0];
     char *ufunc_args[NPY_MAXARGS];
     npy_intp ufunc_steps[NPY_MAXARGS];
     int has0_only[NPY_MAXARGS] = {0};
     double singletons[NPY_MAXARGS];
     ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
-    int *indices = chain_info->op_indices;
     int ntmp = chain_info->ntmp;
     int ninout = chain_info->nin + chain_info->nout;
     npy_intp *tmp_steps = chain_info->tmp_steps;
     char *tmp_mem = NULL;
     char **tmps = {NULL};
     int ilink, iop;
+    npy_intp bufsize = ntot > 8192? 8192: ntot;   /* somehow get actual bufsize!? */
     if (ntmp > 0) {
         int i;
         npy_intp s = ntmp * sizeof(*tmps);
         for (i = 0; i < ntmp; i++) {
-            s += n * chain_info->tmp_steps[i];
+            s += bufsize * chain_info->tmp_steps[i];
         }
         tmp_mem = PyArray_malloc(s);
         if (!tmp_mem) {
@@ -63,73 +63,79 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         }
         tmps = (char **)tmp_mem;
         for (--i; i >= 0; --i) {
-            s -= n * chain_info->tmp_steps[i];
+            s -= bufsize * chain_info->tmp_steps[i];
             tmps[i] = tmp_mem + s;
         }
     }
-    for (ilink = 0; ilink < chain_info->nlink; ilink++) {
-        int type_index = chain_info->type_indices[ilink];
-        PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
-        PyUFuncGenericFunction function = ufunc->functions[type_index];
-        void *ufunc_data = ufunc->data[type_index];
-        int nin = ufunc->nin;
-        int nop = ufunc->nargs;
-        char *arg;
-        npy_intp step;
-        npy_intp dim = 1;
-        for (iop = 0; iop < nop; iop++) {
-            int index = indices[iop];
-            /*
-             * Somewhat complicated logic to catch the case where
-             * all inputs are broadcast, i.e., have step 0.
-             */
-            if (iop >= nin) {
-                has0_only[index] = (dim != n);
-            }
-            if (has0_only[index]) {
-                arg = (char *)(singletons + index);
-                step = 0;
-            }
-            else {
-                if (index < ninout) {
-                    arg = args[index];
-                    step = steps[index];
+    for (npy_intp offset = 0; offset < ntot; offset += bufsize) {
+        int *indices = chain_info->op_indices;
+        npy_intp n = ntot - offset;
+        if (n > bufsize) {
+            n = bufsize;  /* chunk to be dealt with */
+        }
+        for (ilink = 0; ilink < chain_info->nlink; ilink++) {
+            int type_index = chain_info->type_indices[ilink];
+            PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
+            PyUFuncGenericFunction function = ufunc->functions[type_index];
+            void *ufunc_data = ufunc->data[type_index];
+            int nin = ufunc->nin;
+            int nop = ufunc->nargs;
+            char *arg;
+            npy_intp step;
+            npy_intp dim = 1;
+            for (iop = 0; iop < nop; iop++) {
+                int index = indices[iop];
+                /*
+                 * Somewhat complicated logic to catch the case where
+                 * all inputs are broadcast, i.e., have step 0.
+                 */
+                if (iop >= nin) {
+                    has0_only[index] = (dim != n);
+                }
+                if (has0_only[index]) {
+                    arg = (char *)(singletons + index);
+                    step = 0;
                 }
                 else {
-                    arg = tmps[index - ninout];
-                    step = tmp_steps[index - ninout];
+                    if (index < ninout) {
+                        step = steps[index];
+                        arg = args[index] + offset * step;
+                    }
+                    else {
+                        arg = tmps[index - ninout];
+                        step = tmp_steps[index - ninout];
+                    }
+                    if (step && iop < nin) {
+                        dim = n;
+                    }
                 }
-                if (step && iop < nin) {
-                    dim = n;
+                ufunc_args[iop] = arg;
+                ufunc_steps[iop] = step;
+                /* printf("ilink=%d, nin=%d, nout=%d, iop=%d, index=%d, has0only=%d, ", */
+                /*        ilink, nin, ufunc->nout, iop, index, has0_only[index]); */
+                /* printf("ufunc_arg=%p, ufunc_step=%ld, dim=%ld\n", */
+                /*        ufunc_args[iop], ufunc_steps[iop], dim); */
+            }
+            function(ufunc_args, &dim, ufunc_steps, ufunc_data);
+            indices += nop;
+        }
+        for (iop = chain_info->nin; iop < ninout; iop++) {
+            /* printf("final iop=%d, has0_only=%d, steps=%ld\n", */
+            /*        iop, has0_only[iop], steps[iop]); */
+            if (has0_only[iop] && steps[iop]) {
+                /* copy missing results */
+                int i;
+                double c = singletons[iop];
+                npy_intp step = steps[iop];
+                char *tmp = args[iop] + offset * step;
+                for (i = 0; i < n; i++, tmp += step) {
+                    *(double *)tmp = c;
                 }
             }
-            ufunc_args[iop] = arg;
-            ufunc_steps[iop] = step;
-            
-            /* printf("ilink=%d, nin=%d, nout=%d, iop=%d, index=%d, has0only=%d\n", */
-            /*        ilink, nin, ufunc->nout, iop, index, has0_only[index]); */
-            /* printf("    ufunc_arg=%p, ufunc_step=%ld, dim=%ld\n", */
-            /*        ufunc_args[iop], ufunc_steps[iop], dim); */
         }
-        function(ufunc_args, &dim, ufunc_steps, ufunc_data);
-        indices += nop;
     }
     if (ntmp > 0) {
         PyArray_free(tmp_mem);
-    }
-    for (iop = chain_info->nin; iop < ninout; iop++) {
-        /* printf("final iop=%d, has0_only=%d, steps=%ld\n", */
-        /*        iop, has0_only[iop], steps[iop]); */
-        if (has0_only[iop] && steps[iop]) {
-            /* copy missing results */
-            int i;
-            double c = singletons[iop];
-            char *tmp = args[iop];
-            npy_intp step = steps[iop];
-            for (i = 0; i < n; i++, tmp += step) {
-                *(double *)tmp = c;
-            }
-        }
     }
 }
 
