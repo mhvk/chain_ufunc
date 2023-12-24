@@ -10,8 +10,6 @@
 #include "Python.h"
 #include "numpy/arrayobject.h"
 #include "numpy/ufuncobject.h"
-#include "numpy/npy_math.h"
-#include "numpy/npy_3kcompat.h"
 
 /*
  * Should think about deallocation:
@@ -536,7 +534,7 @@ PyMODINIT_FUNC PyInit_ufunc_chain(void) {
 
     d = PyModule_GetDict(m);
 
-    version = PyString_FromString("0.1");
+    version = PyUnicode_FromString("0.1");
     PyDict_SetItemString(d, "__version__", version);
     Py_DECREF(version);
 
