@@ -36,14 +36,15 @@ static void
 inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 {
     npy_intp ntot = dimensions[0];
+    const ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
+    const int ntmp = chain_info->ntmp;
+    const int nin = chain_info->nin;
+    const int ninout = nin + chain_info->nout;
+    const npy_intp *tmp_steps = chain_info->tmp_steps;
     char *ufunc_args[NPY_MAXARGS];
     npy_intp ufunc_steps[NPY_MAXARGS];
     int has0_only[NPY_MAXARGS] = {0};
     double singletons[NPY_MAXARGS];
-    ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
-    int ntmp = chain_info->ntmp;
-    int ninout = chain_info->nin + chain_info->nout;
-    npy_intp *tmp_steps = chain_info->tmp_steps;
     char *tmp_mem = NULL;
     char **tmps = {NULL};
     int ilink, iop;
@@ -52,7 +53,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         int i;
         npy_intp s = ntmp * sizeof(*tmps);
         for (i = 0; i < ntmp; i++) {
-            s += bufsize * chain_info->tmp_steps[i];
+            s += bufsize * tmp_steps[i];
         }
         tmp_mem = PyArray_malloc(s);
         if (!tmp_mem) {
@@ -61,7 +62,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         }
         tmps = (char **)tmp_mem;
         for (--i; i >= 0; --i) {
-            s -= bufsize * chain_info->tmp_steps[i];
+            s -= bufsize * tmp_steps[i];
             tmps[i] = tmp_mem + s;
         }
     }
@@ -119,7 +120,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
             function(ufunc_args, &dim, ufunc_steps, ufunc_data);
             indices += nop;
         }
-        for (iop = chain_info->nin; iop < ninout; iop++) {
+        for (iop = nin; iop < ninout; iop++) {
 #ifdef CHAIN_DEBUG
             printf("final iop=%d, has0_only=%d, steps=%ld\n",
                    iop, has0_only[iop], steps[iop]);
