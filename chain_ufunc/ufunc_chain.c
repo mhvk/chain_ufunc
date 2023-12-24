@@ -111,17 +111,21 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                 }
                 ufunc_args[iop] = arg;
                 ufunc_steps[iop] = step;
-                /* printf("ilink=%d, nin=%d, nout=%d, iop=%d, index=%d, has0only=%d, ", */
-                /*        ilink, nin, ufunc->nout, iop, index, has0_only[index]); */
-                /* printf("ufunc_arg=%p, ufunc_step=%ld, dim=%ld\n", */
-                /*        ufunc_args[iop], ufunc_steps[iop], dim); */
+#ifdef CHAIN_DEBUG
+                printf("ilink=%d, nin=%d, nout=%d, iop=%d, index=%d, has0only=%d, ",
+                       ilink, nin, ufunc->nout, iop, index, has0_only[index]);
+                printf("ufunc_arg=%p, ufunc_step=%ld, dim=%ld\n",
+                       ufunc_args[iop], ufunc_steps[iop], dim);
+#endif
             }
             function(ufunc_args, &dim, ufunc_steps, ufunc_data);
             indices += nop;
         }
         for (iop = chain_info->nin; iop < ninout; iop++) {
-            /* printf("final iop=%d, has0_only=%d, steps=%ld\n", */
-            /*        iop, has0_only[iop], steps[iop]); */
+#ifdef CHAIN_DEBUG
+            printf("final iop=%d, has0_only=%d, steps=%ld\n",
+                   iop, has0_only[iop], steps[iop]);
+#endif
             if (has0_only[iop] && steps[iop]) {
                 /* copy missing results */
                 int i;
