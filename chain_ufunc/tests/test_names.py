@@ -33,7 +33,7 @@ class TestSimple:
         mul = np.multiply(Input(), Input('b'), out=(Output('c'),))
         assert mul.names == [None, 'b', 'c']
 
-    def test_two_functions(self):
+    def test_two_functions_two_inputs(self):
         mulsin = np.sin(np.multiply(Input(), Input()))
         assert mulsin.names == [None, None, None]
         mulsin = np.sin(np.multiply(Input(), Input(), Output()))
@@ -51,6 +51,10 @@ class TestSimple:
         assert mulsin.names == ['a', None, 'd']
         mulsin = np.sin(np.multiply(Input('a'), Input('b')), Output('d'))
         assert mulsin.names == ['a', 'b', 'd']
+
+    def test_two_functions_three_inputs(self):
+        muladd = np.add(np.multiply(Input(), Input()), Input())
+        assert muladd.names == [None, None, None, None]
 
     def test_function_of_two_functions(self):
         sincosarctan2 = np.arctan2(np.sin(Input()), np.cos(Input()))
