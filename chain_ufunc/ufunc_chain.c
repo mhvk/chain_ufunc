@@ -60,7 +60,8 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     char **ufunc_args = malloc(nargs_max * sizeof(char*));
     npy_intp *ufunc_steps = malloc(nargs_max * sizeof(npy_intp));
     npy_bool *scalar_arg = malloc(nargs * sizeof(npy_bool));
-    double *cache = cache_scalars ? malloc(ncache_max * sizeof(double)) : NULL;
+    int cache_item_size = sizeof(double);
+    char *cache = cache_scalars ? malloc(ncache_max * cache_item_size) : NULL;
     /* Allocate memory for temperary buffers. */
     char *tmp_mem = NULL;
     char **tmps = {NULL};
@@ -123,14 +124,20 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                 ufunc->functions[type_index](ufunc_args, &dim, ufunc_steps,
                                              ufunc->data[type_index]);
                 if (cache_scalars && scalar_inputs) {
+                    /* Cache outputs for next chunk, to avoid recalculating. */
                     for (int iop = ufunc->nin; iop < ufunc->nargs; iop++) {
-                        cache[cache_index++] = *(double *)ufunc_args[iop];
+                        memcpy(cache + cache_index * cache_item_size,
+                               ufunc_args[iop], sizeof(double));
+                        cache_index++;
                     }
                 }
             }
             else if (cache_scalars) {
+                /* Retrieve outputs from cache. */
                 for (int iop = ufunc->nin; iop < ufunc->nargs; iop++) {
-                    *(double *)ufunc_args[iop] = cache[cache_index++];
+                    memcpy(ufunc_args[iop],
+                           cache + cache_index * cache_item_size, sizeof(double));
+                    cache_index++;
                 }
             }
             index += ufunc->nargs;
