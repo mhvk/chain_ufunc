@@ -137,7 +137,8 @@ def create_chained_ufunc(links, nin, nout, ntmp,
                     nones=('None,' if nout == 1 else
                            ', '.join(['None'] * nout))))
     code_lines = ["{name}({inputs}):".format(name=name, inputs=inputs)]
-    code_lines.append('{} = None'.format(', '.join(names[nin:])))
+    code_lines.append('{} = {}'.format(', '.join(names[nin:]),
+                                       ', '.join(['None']*(nout+ntmp))))
     for uf, op_map in links:
         uf_in = [names[op_map[i]] for i in range(uf.nin)]
         uf_out = [names[op_map[i]] for i in range(uf.nin, uf.nargs)]
