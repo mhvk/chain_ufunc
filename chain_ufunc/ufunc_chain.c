@@ -28,7 +28,6 @@ typedef struct {
     PyUFuncObject **ufuncs;
     int *type_indices;
     npy_intp *tmp_steps;
-    int nop_indices;
     int *op_indices;
 } ufunc_chain_info;
 
@@ -36,26 +35,36 @@ typedef struct {
 static void
 inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
 {
-    npy_intp ntot = dimensions[0];
+    const npy_intp ntot = dimensions[0];
     const ufunc_chain_info *chain_info = (ufunc_chain_info *)data;
-    const int ntmp = chain_info->ntmp;
     const int nin = chain_info->nin;
     const int ninout = nin + chain_info->nout;
+    const int ntmp = chain_info->ntmp;
+    const int nlink = chain_info->nlink;
     const int nargs = ninout + ntmp;
     const npy_intp *tmp_steps = chain_info->tmp_steps;
 
-    npy_intp bufsize = 8192;  /* somehow get actual bufsize!? */
-    npy_bool cache_scalars = ntot > bufsize;
-    /* Allocate helper arrays. */
-    char **ufunc_args = malloc(nargs * sizeof(char*));
-    npy_intp *ufunc_steps = malloc(nargs * sizeof(npy_intp));
+    const npy_intp bufsize = 8192;  /* somehow get actual bufsize!? */
+    const npy_bool cache_scalars = ntot > bufsize;
+    /* Get some numbers on first call only */
+    static int nargs_max = -1;
+    static int ncache_max = 0;
+    if (nargs_max < 0) {
+        for (int ilink=0; ilink < nlink; ilink++) {
+            const PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
+            nargs_max = ufunc->nargs > nargs_max? ufunc->nargs : nargs_max;
+            ncache_max += ufunc->nout;
+        }
+    }
+    /* Use those to allocate helper arrays (TODO: cache can be better). */
+    char **ufunc_args = malloc(nargs_max * sizeof(char*));
+    npy_intp *ufunc_steps = malloc(nargs_max * sizeof(npy_intp));
     npy_bool *scalar_arg = malloc(nargs * sizeof(npy_bool));
-    /* have to do cache better! */
-    double *cache = cache_scalars ? malloc(chain_info->nop_indices * sizeof(double)) : NULL;
+    double *cache = cache_scalars ? malloc(ncache_max * sizeof(double)) : NULL;
     /* Allocate memory for temperary buffers. */
     char *tmp_mem = NULL;
     char **tmps = {NULL};
-    npy_intp tmpsize = ntot > bufsize? bufsize: ntot;
+    const npy_intp tmpsize = ntot > bufsize? bufsize: ntot;
     if (ntmp > 0) {
         int i;
         npy_intp s = ntmp * sizeof(*tmps);
@@ -73,30 +82,29 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
             tmps[i] = tmp_mem + s;
         }
     }
-    /* check for scalar inputs, to use in the loop */
+    /* Check for scalar inputs, to enable looking for scalar outputs below */
     for (int i_arg = 0; i_arg < nin; i_arg++) {
         scalar_arg[i_arg] = (steps[i_arg] == 0);
     }
-    /* loop over chunks */
+    /* Loop over chunks */
     for (npy_intp offset = 0; offset < ntot; offset += bufsize) {
-        npy_intp n = ntot - offset < bufsize? ntot - offset : bufsize;
+        const npy_intp n = ntot - offset < bufsize? ntot - offset : bufsize;
         int index = 0, cache_index = 0;
         /* start calculating chunk, looping over the chain */
-        for (int ilink = 0; ilink < chain_info->nlink; ilink++) {
-            PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
+        for (int ilink = 0; ilink < nlink; ilink++) {
+            const PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
             npy_bool scalar_inputs = 1;
             for (int iop = 0; iop < ufunc->nargs; iop++) {
-                int i_arg = chain_info->op_indices[index + iop];
-                /*
-                 * Use inputs to determine whether the ufunc is scalar
-                 * and set outputs accordingly.
-                 */
+                const int i_arg = chain_info->op_indices[index + iop];
                 if (iop < ufunc->nin) {
+                    /* If input, use it to determine whether the ufunc is scalar */
                     scalar_inputs &= scalar_arg[i_arg];
                 }
                 else {
+                    /* If output, set it accordingly. */
                     scalar_arg[i_arg] = scalar_inputs;
                 }
+                /* Set up ufunc step and argument pointer */
                 npy_intp step = scalar_arg[i_arg] ? 0 : (
                     i_arg < ninout? steps[i_arg] : tmp_steps[i_arg - ninout]);
                 ufunc_steps[iop] = step;
@@ -109,7 +117,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                        ufunc_args[iop], ufunc_steps[iop], dim);
 #endif
             }
-            if (!scalar_inputs || offset == 0) {
+            if (offset == 0 || !scalar_inputs) {
                 npy_intp dim = scalar_inputs? 1 : n;
                 int type_index = chain_info->type_indices[ilink];
                 ufunc->functions[type_index](ufunc_args, &dim, ufunc_steps,
@@ -138,7 +146,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         printf("final iop=%d, scalar_arg=%d, step=%ld\n",
                iop, scalar_arg[iop], steps[iop]);
 #endif
-        npy_intp step = steps[iop];
+        const npy_intp step = steps[iop];
         if (scalar_arg[iop] && step != 0) {
             /* copy missing results */
             char *tmp = args[iop];
@@ -396,7 +404,6 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         chain_info[itype].nlink = nlink;
         chain_info[itype].ufuncs = ufuncs;
         chain_info[itype].type_indices = type_indices + itype * nlink;
-        chain_info[itype].nop_indices = nindices;
         chain_info[itype].op_indices = op_indices;
         chain_info[itype].tmp_steps = ntmp > 0 ? tmp_steps + itype * ntmp: NULL;
         for (i = 0; i < ntmp; i++) {
