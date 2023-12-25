@@ -43,16 +43,18 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     const int ninout = nin + chain_info->nout;
     const int nargs = ninout + ntmp;
     const npy_intp *tmp_steps = chain_info->tmp_steps;
+
+    npy_intp bufsize = 8192;   /* somehow get actual bufsize!? */
+    npy_bool cache_scalars = ntot > bufsize;
+    /* Allocate helper arrays. */
     char **ufunc_args = malloc(nargs * sizeof(char*));
     npy_intp *ufunc_steps = malloc(nargs * sizeof(npy_intp));
     npy_bool *scalar_arg = malloc(nargs * sizeof(npy_bool));
     double *scalars = malloc(chain_info->nop_indices * sizeof(double));
+    /* Allocate memory for temperary buffers. */
     char *tmp_mem = NULL;
     char **tmps = {NULL};
-    npy_intp bufsize = 8192;   /* somehow get actual bufsize!? */
-    npy_bool cache_scalars = ntot > bufsize;
     npy_intp tmpsize = ntot > bufsize? bufsize: ntot;
-
     if (ntmp > 0) {
         int i;
         npy_intp s = ntmp * sizeof(*tmps);
@@ -70,20 +72,17 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
             tmps[i] = tmp_mem + s;
         }
     }
-
+    /* check for scalar inputs, to use in the loop */
     for (int i_arg = 0; i_arg < nin; i_arg++) {
         scalar_arg[i_arg] = (steps[i_arg] == 0);
     }
-
+    /* loop over chunks */
     for (npy_intp offset = 0; offset < ntot; offset += bufsize) {
-        npy_intp n = ntot - offset;
-        if (n > bufsize) {
-            n = bufsize;  /* chunk to be dealt with */
-        }
+        npy_intp n = ntot - offset < bufsize? ntot - offset : bufsize;
         int index = 0, cache_index = 0;
+        /* start calculating chunk, looping over the chain */
         for (int ilink = 0; ilink < chain_info->nlink; ilink++) {
             PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
-            int type_index = chain_info->type_indices[ilink];
             npy_bool scalar_inputs = 1;
             for (int iop = 0; iop < ufunc->nargs; iop++) {
                 int i_arg = chain_info->op_indices[index + iop];
@@ -111,6 +110,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
             }
             if (!scalar_inputs || offset == 0) {
                 npy_intp dim = scalar_inputs? 1 : n;
+                int type_index = chain_info->type_indices[ilink];
                 ufunc->functions[type_index](ufunc_args, &dim, ufunc_steps,
                                              ufunc->data[type_index]);
                 if (cache_scalars && scalar_inputs) {
@@ -134,7 +134,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
      */
     for (int iop = nin; iop < ninout; iop++) {
 #ifdef CHAIN_DEBUG
-        printf("final iop=%d, scalar_arg=%d, steps=%ld\n",
+        printf("final iop=%d, scalar_arg=%d, step=%ld\n",
                iop, scalar_arg[iop], steps[iop]);
 #endif
         npy_intp step = steps[iop];
