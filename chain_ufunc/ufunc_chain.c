@@ -44,13 +44,14 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     const int nargs = ninout + ntmp;
     const npy_intp *tmp_steps = chain_info->tmp_steps;
 
-    npy_intp bufsize = 8192;   /* somehow get actual bufsize!? */
+    npy_intp bufsize = 8192;  /* somehow get actual bufsize!? */
     npy_bool cache_scalars = ntot > bufsize;
     /* Allocate helper arrays. */
     char **ufunc_args = malloc(nargs * sizeof(char*));
     npy_intp *ufunc_steps = malloc(nargs * sizeof(npy_intp));
     npy_bool *scalar_arg = malloc(nargs * sizeof(npy_bool));
-    double *scalars = malloc(chain_info->nop_indices * sizeof(double));
+    /* have to do cache better! */
+    double *cache = cache_scalars ? malloc(chain_info->nop_indices * sizeof(double)) : NULL;
     /* Allocate memory for temperary buffers. */
     char *tmp_mem = NULL;
     char **tmps = {NULL};
@@ -61,7 +62,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         for (i = 0; i < ntmp; i++) {
             s += tmpsize * tmp_steps[i];
         }
-        tmp_mem = PyArray_malloc(s);
+        tmp_mem = malloc(s);
         if (!tmp_mem) {
             PyErr_NoMemory();
             return;
@@ -115,13 +116,13 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                                              ufunc->data[type_index]);
                 if (cache_scalars && scalar_inputs) {
                     for (int iop = ufunc->nin; iop < ufunc->nargs; iop++) {
-                        scalars[cache_index++] = *(double *)ufunc_args[iop];
+                        cache[cache_index++] = *(double *)ufunc_args[iop];
                     }
                 }
             }
             else if (cache_scalars) {
                 for (int iop = ufunc->nin; iop < ufunc->nargs; iop++) {
-                    *(double *)ufunc_args[iop] = scalars[cache_index++];
+                    *(double *)ufunc_args[iop] = cache[cache_index++];
                 }
             }
             index += ufunc->nargs;
@@ -149,12 +150,12 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         }
     }
     if (ntmp > 0) {
-        PyArray_free(tmp_mem);
+        free(tmp_mem);
     }
     free(ufunc_args);
     free(ufunc_steps);
     free(scalar_arg);
-    free(scalars);
+    free(cache);
 }
 
 
