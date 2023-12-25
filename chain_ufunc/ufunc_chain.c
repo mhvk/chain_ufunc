@@ -27,8 +27,9 @@ typedef struct {
     int nlink;
     PyUFuncObject **ufuncs;
     int *type_indices;
-    int *op_indices;
     npy_intp *tmp_steps;
+    int nop_indices;
+    int *op_indices;
 } ufunc_chain_info;
 
 
@@ -40,16 +41,16 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     const int ntmp = chain_info->ntmp;
     const int nin = chain_info->nin;
     const int ninout = nin + chain_info->nout;
+    const int nargs = ninout + ntmp;
     const npy_intp *tmp_steps = chain_info->tmp_steps;
-    char *ufunc_args[NPY_MAXARGS];
-    npy_intp ufunc_steps[NPY_MAXARGS];
-    int has0_only[NPY_MAXARGS];
-    npy_intp all_steps[NPY_MAXARGS];
-    npy_bool scalar_link[NPY_MAXARGS];
-    double singletons[NPY_MAXARGS];
+    char **ufunc_args = malloc(nargs * sizeof(char*));
+    npy_intp *ufunc_steps = malloc(nargs * sizeof(npy_intp));
+    npy_bool *has0_only = malloc(nargs * sizeof(npy_bool));
+    npy_bool *scalar_link = malloc(chain_info->nlink * sizeof(npy_bool));
+    npy_intp *all_steps = malloc(chain_info->nop_indices * sizeof(npy_intp));
+    double *singletons = malloc(chain_info->nop_indices * sizeof(double));
     char *tmp_mem = NULL;
     char **tmps = {NULL};
-    int ilink, iop, index;
     npy_intp bufsize = 8192;   /* somehow get actual bufsize!? */
     npy_bool cache_scalars = ntot > bufsize;
     npy_intp tmpsize = ntot > bufsize? bufsize: ntot;
@@ -79,28 +80,25 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     for (int i_arg = 0; i_arg < nin; i_arg++) {
         has0_only[i_arg] = (steps[i_arg] == 0);
     }
-    int any_scalar_link = 0;
-    for (ilink = 0, index = 0; ilink < chain_info->nlink; ilink++) {
+     for (int ilink = 0, index = 0; ilink < chain_info->nlink; ilink++) {
         PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
         npy_bool scalar_inputs = 1;
-        for (iop = 0; iop < ufunc->nargs; iop++) {
+        for (int iop = 0; iop < ufunc->nargs; iop++) {
             int i_arg = chain_info->op_indices[index + iop];
             if (iop < ufunc->nin) {
-                if (!has0_only[i_arg]) {
-                    scalar_inputs = 0;
-                }
+                scalar_inputs &= has0_only[i_arg];
             }
             else {
                 has0_only[i_arg] = scalar_inputs;
             }
-            all_steps[index + iop] = has0_only[i_arg] ? 0 : (i_arg < ninout? steps[i_arg] : tmp_steps[i_arg - ninout]);
+            all_steps[index + iop] = has0_only[i_arg] ? 0 : (
+                i_arg < ninout? steps[i_arg] : tmp_steps[i_arg - ninout]);
         }
         scalar_link[ilink] = scalar_inputs;
-        any_scalar_link |= scalar_inputs;
-#ifdef CHAIN_DEBUG
-        printf("ilink=%d, scalar_link=%d\n", ilink, scalar_link[ilink]);
-#endif
         index += ufunc->nargs;
+#ifdef CHAIN_DEBUG
+        printf("ilink=%d, scalar_inputs=%d\n", ilink, scalar_inputs);
+#endif
     }
 
     for (npy_intp offset = 0; offset < ntot; offset += bufsize) {
@@ -108,7 +106,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         if (n > bufsize) {
             n = bufsize;  /* chunk to be dealt with */
         }
-        for (ilink = 0, index = 0; ilink < chain_info->nlink; ilink++) {
+        for (int ilink = 0, index = 0; ilink < chain_info->nlink; ilink++) {
             PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
             npy_intp dim = n;
             if (scalar_link[ilink]) {
@@ -117,16 +115,14 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                 dim = 1;
             }
             int type_index = chain_info->type_indices[ilink];
-            PyUFuncGenericFunction ufunc_function = ufunc->functions[type_index];
-            void *ufunc_data = ufunc->data[type_index];
-            for (iop = 0; iop < ufunc->nargs; iop++) {
+            for (int iop = 0; iop < ufunc->nargs; iop++) {
                 int i_arg = chain_info->op_indices[index + iop];
                 npy_intp step = all_steps[index + iop];
                 ufunc_steps[iop] = step;
                 ufunc_args[iop] = i_arg < ninout? args[i_arg] + offset * step
                                                 : tmps[i_arg - ninout];
                 if (cache_scalars && step == 0) {
-                    if (offset == 0) {
+                    if (offset == 0) {  /* first time: cache result */
                         singletons[index + iop] = *(double *)ufunc_args[iop];
                     } else {
                         ufunc_args[iop] = (char *)&singletons[index + iop];
@@ -139,7 +135,8 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                        ufunc_args[iop], ufunc_steps[iop], dim);
 #endif
             }
-            ufunc_function(ufunc_args, &dim, ufunc_steps, ufunc_data);
+            ufunc->functions[type_index](ufunc_args, &dim, ufunc_steps,
+                                         ufunc->data[type_index]);
           next_ufunc:
             index += ufunc->nargs;
         }
@@ -149,7 +146,7 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
      * calculation, fill them (can happen if all inputs were either
      * scalar or broadcast).
      */
-    for (iop = nin; iop < ninout; iop++) {
+    for (int iop = nin; iop < ninout; iop++) {
 #ifdef CHAIN_DEBUG
         printf("final iop=%d, has0_only=%d, steps=%ld\n",
                iop, has0_only[iop], steps[iop]);
@@ -168,6 +165,12 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     if (ntmp > 0) {
         PyArray_free(tmp_mem);
     }
+    free(ufunc_args);
+    free(ufunc_steps);
+    free(has0_only);
+    free(scalar_link);
+    free(all_steps);
+    free(singletons);
 }
 
 
@@ -408,6 +411,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
         chain_info[itype].nlink = nlink;
         chain_info[itype].ufuncs = ufuncs;
         chain_info[itype].type_indices = type_indices + itype * nlink;
+        chain_info[itype].nop_indices = nindices;
         chain_info[itype].op_indices = op_indices;
         chain_info[itype].tmp_steps = ntmp > 0 ? tmp_steps + itype * ntmp: NULL;
         for (i = 0; i < ntmp; i++) {
