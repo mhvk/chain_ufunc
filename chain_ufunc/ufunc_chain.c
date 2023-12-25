@@ -45,10 +45,8 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     const npy_intp *tmp_steps = chain_info->tmp_steps;
     char **ufunc_args = malloc(nargs * sizeof(char*));
     npy_intp *ufunc_steps = malloc(nargs * sizeof(npy_intp));
-    npy_bool *has0_only = malloc(nargs * sizeof(npy_bool));
-    npy_bool *scalar_link = malloc(chain_info->nlink * sizeof(npy_bool));
-    npy_intp *all_steps = malloc(chain_info->nop_indices * sizeof(npy_intp));
-    double *singletons = malloc(chain_info->nop_indices * sizeof(double));
+    npy_bool *scalar_arg = malloc(nargs * sizeof(npy_bool));
+    double *scalars = malloc(chain_info->nop_indices * sizeof(double));
     char *tmp_mem = NULL;
     char **tmps = {NULL};
     npy_intp bufsize = 8192;   /* somehow get actual bufsize!? */
@@ -73,32 +71,8 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         }
     }
 
-    /*
-     * Calculate step sizes before iterating over the buffer,
-     * and use those to identify parts that are scalar (or broadcast).
-     */
     for (int i_arg = 0; i_arg < nin; i_arg++) {
-        has0_only[i_arg] = (steps[i_arg] == 0);
-    }
-     for (int ilink = 0, index = 0; ilink < chain_info->nlink; ilink++) {
-        PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
-        npy_bool scalar_inputs = 1;
-        for (int iop = 0; iop < ufunc->nargs; iop++) {
-            int i_arg = chain_info->op_indices[index + iop];
-            if (iop < ufunc->nin) {
-                scalar_inputs &= has0_only[i_arg];
-            }
-            else {
-                has0_only[i_arg] = scalar_inputs;
-            }
-            all_steps[index + iop] = has0_only[i_arg] ? 0 : (
-                i_arg < ninout? steps[i_arg] : tmp_steps[i_arg - ninout]);
-        }
-        scalar_link[ilink] = scalar_inputs;
-        index += ufunc->nargs;
-#ifdef CHAIN_DEBUG
-        printf("ilink=%d, scalar_inputs=%d\n", ilink, scalar_inputs);
-#endif
+        scalar_arg[i_arg] = (steps[i_arg] == 0);
     }
 
     for (npy_intp offset = 0; offset < ntot; offset += bufsize) {
@@ -106,28 +80,28 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
         if (n > bufsize) {
             n = bufsize;  /* chunk to be dealt with */
         }
-        for (int ilink = 0, index = 0; ilink < chain_info->nlink; ilink++) {
+        int index = 0, cache_index = 0;
+        for (int ilink = 0; ilink < chain_info->nlink; ilink++) {
             PyUFuncObject *ufunc = chain_info->ufuncs[ilink];
-            npy_intp dim = n;
-            if (scalar_link[ilink]) {
-                /* scalars need to be calculated only once */
-                if (offset > 0) goto next_ufunc;
-                dim = 1;
-            }
             int type_index = chain_info->type_indices[ilink];
+            npy_bool scalar_inputs = 1;
             for (int iop = 0; iop < ufunc->nargs; iop++) {
                 int i_arg = chain_info->op_indices[index + iop];
-                npy_intp step = all_steps[index + iop];
-                ufunc_steps[iop] = step;
-                ufunc_args[iop] = i_arg < ninout? args[i_arg] + offset * step
-                                                : tmps[i_arg - ninout];
-                if (cache_scalars && step == 0) {
-                    if (offset == 0) {  /* first time: cache result */
-                        singletons[index + iop] = *(double *)ufunc_args[iop];
-                    } else {
-                        ufunc_args[iop] = (char *)&singletons[index + iop];
-                    }
+                /*
+                 * Use inputs to determine whether the ufunc is scalar
+                 * and set outputs accordingly.
+                 */
+                if (iop < ufunc->nin) {
+                    scalar_inputs &= scalar_arg[i_arg];
                 }
+                else {
+                    scalar_arg[i_arg] = scalar_inputs;
+                }
+                npy_intp step = scalar_arg[i_arg] ? 0 : (
+                    i_arg < ninout? steps[i_arg] : tmp_steps[i_arg - ninout]);
+                ufunc_steps[iop] = step;
+                ufunc_args[iop] = (
+                    i_arg < ninout? args[i_arg] + offset * step : tmps[i_arg - ninout]);
 #ifdef CHAIN_DEBUG
                 printf("ilink=%d, nin=%d, nout=%d, iop=%d, index=%d, i_arg=%d, ",
                        ilink, ufunc->nin, ufunc->nout, iop, index, i_arg);
@@ -135,9 +109,21 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
                        ufunc_args[iop], ufunc_steps[iop], dim);
 #endif
             }
-            ufunc->functions[type_index](ufunc_args, &dim, ufunc_steps,
-                                         ufunc->data[type_index]);
-          next_ufunc:
+            if (!scalar_inputs || offset == 0) {
+                npy_intp dim = scalar_inputs? 1 : n;
+                ufunc->functions[type_index](ufunc_args, &dim, ufunc_steps,
+                                             ufunc->data[type_index]);
+                if (cache_scalars && scalar_inputs) {
+                    for (int iop = ufunc->nin; iop < ufunc->nargs; iop++) {
+                        scalars[cache_index++] = *(double *)ufunc_args[iop];
+                    }
+                }
+            }
+            else if (cache_scalars) {
+                for (int iop = ufunc->nin; iop < ufunc->nargs; iop++) {
+                    *(double *)ufunc_args[iop] = scalars[cache_index++];
+                }
+            }
             index += ufunc->nargs;
         }
     }
@@ -148,11 +134,11 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
      */
     for (int iop = nin; iop < ninout; iop++) {
 #ifdef CHAIN_DEBUG
-        printf("final iop=%d, has0_only=%d, steps=%ld\n",
-               iop, has0_only[iop], steps[iop]);
+        printf("final iop=%d, scalar_arg=%d, steps=%ld\n",
+               iop, scalar_arg[iop], steps[iop]);
 #endif
         npy_intp step = steps[iop];
-        if (has0_only[iop] && step != 0) {
+        if (scalar_arg[iop] && step != 0) {
             /* copy missing results */
             char *tmp = args[iop];
             double c = *(double *)tmp;
@@ -167,10 +153,8 @@ inner_loop_chain(char **args, npy_intp *dimensions, npy_intp *steps, void *data)
     }
     free(ufunc_args);
     free(ufunc_steps);
-    free(has0_only);
-    free(scalar_link);
-    free(all_steps);
-    free(singletons);
+    free(scalar_arg);
+    free(scalars);
 }
 
 
