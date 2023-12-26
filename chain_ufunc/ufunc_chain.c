@@ -1,24 +1,9 @@
 /* -*- c -*- */
-
-/*
- *****************************************************************************
- **                            INCLUDES                                     **
- *****************************************************************************
- */
 #define NPY_NO_DEPRECATED_API NPY_API_VERSION
 
 #include "Python.h"
 #include "numpy/arrayobject.h"
 #include "numpy/ufuncobject.h"
-
-/*
- * Should think about deallocation:
- * point to UFUNCS and INCREF/DECREF them?
- * ufunc_dealloc:
- * - frees core_num_dims, core_offsets, core_signature, ptr, op_flags
- * - XDECREFs ->userloops, ->obj
- * ->ptr is meant for any dynamically allocated memory! (in ufunc_frompyfunc)
- */
 
 typedef struct {
     int nin;
@@ -210,7 +195,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     /* Calculated */
     int ntypes;
     /* Counters */
-    int ilink, itype, i;
+    int i;
     /* Parts for which memory will be allocated */
     char *ufunc_mem=NULL, *mem;
     npy_intp mem_size, sizes[9];
@@ -261,10 +246,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
      * Get ufuncs as well as the operand indices as flattened array.
      */
     nindices = 0;
-    for (ilink = 0; ilink < nlink; ilink++) {
-        PyObject *ufunc_obj, *op_map;
-        PyUFuncObject *ufunc;
-        int nop;
+    for (int ilink = 0; ilink < nlink; ilink++) {
         PyObject *link = PyList_GET_ITEM(links, ilink);
         if (!PyTuple_Check(link)) {
             goto fail;
@@ -275,16 +257,16 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
                 "a ufunc and a list of operand indices");
             goto fail;
         }
-        ufunc_obj = PyTuple_GET_ITEM(link, 0);
-        ufunc = (PyUFuncObject *)ufunc_obj;
+        PyObject *ufunc_obj = PyTuple_GET_ITEM(link, 0);
+        PyUFuncObject *ufunc = (PyUFuncObject *)ufunc_obj;
         if (Py_TYPE(ufunc_obj) != ufunc_cls || ufunc->core_enabled ||
                 ufunc->ptr != NULL || ufunc->obj != NULL) {
             PyErr_SetString(PyExc_TypeError,
                 "only simply ufuncs can be used to make chains");
             goto fail;
         }
-        op_map = PyTuple_GET_ITEM(link, 1);
-        nop = PySequence_Size(op_map);
+        PyObject *op_map = PyTuple_GET_ITEM(link, 1);
+        int nop = PySequence_Size(op_map);
         if (nop < 0) {
             goto fail;
         }
@@ -306,6 +288,8 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     ntypes = 1;
     /*
      * Get memory requirements for all parts that we should keep.
+     * We use one chunk for everything, so we can attach it to the
+     * ufunc (via ptr), which the destructor will free automatically.
      */
     i = 0;
     /* basic information for the new chained ufunc itself */
@@ -359,25 +343,22 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
      * Fill operand indices array.
      */
     nindices = 0;
-    for (ilink = 0; ilink < nlink; ilink++) {
-        int iop;
+    for (int ilink = 0; ilink < nlink; ilink++) {
         PyUFuncObject *ufunc = ufuncs[ilink];
         PyObject *link = PyList_GET_ITEM(links, ilink);
         PyObject *op_map = PyTuple_GET_ITEM(link, 1);
-        for (iop = 0; iop < ufunc->nargs; iop++) {
-            int op_index;
-            PyObject *number;
+        for (int iop = 0; iop < ufunc->nargs; iop++) {
             int min_index = iop < ufunc->nin ? 0: nin;
             PyObject *obj = PySequence_GetItem(op_map, iop);
             if (obj == NULL) {
                 goto fail;
             }
-            number = PyNumber_Index(obj);
+            PyObject *number = PyNumber_Index(obj);
             Py_DECREF(obj);
             if (number == NULL) {
                 goto fail;
             }
-            op_index = PyLong_AsLong(number);
+            int op_index = PyLong_AsLong(number);
             Py_DECREF(number);
             if (op_index == -1 && PyErr_Occurred()) {
                 goto fail;
@@ -396,8 +377,8 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     /*
      * Set up ufunc information for each type (just DOUBLE for now).
      */
-    for (itype = 0; itype < ntypes; itype++) {
-        int i, nop=nin + nout;
+    for (int itype = 0; itype < ntypes; itype++) {
+        int nop=nin + nout;
         for (i = itype*nop; i < (itype+1)*nop; i++) {
             types[i] = NPY_DOUBLE;
         }
@@ -417,7 +398,7 @@ create_ufunc_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             chain_info[itype].tmp_steps[i] = sizeof(double);
         }
         /* find ufunc loop with correct type, and store in type_indices */
-        for (ilink = 0; ilink < nlink; ilink++) {
+        for (int ilink = 0; ilink < nlink; ilink++) {
             PyUFuncObject *ufunc = ufuncs[ilink];
             for (i = 0; i < ufunc->ntypes; i++) {
                 int it = i * ufunc->nargs;
@@ -459,12 +440,10 @@ get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     char *kw_list[] = {"ufunc", NULL};
     PyObject *chained_ufunc_obj;
     PyUFuncObject *chained_ufunc;
-    ufunc_chain_info *chain_info;
     int nlink;
     PyUFuncObject *ufunc_array[1];
     PyUFuncObject **ufuncs = ufunc_array;
     int *op_indices = NULL;
-    int ilink;
     PyObject *links=NULL, *link=NULL, *op_map=NULL;
     PyTypeObject *ufunc_cls = get_ufunc_cls();
 
@@ -482,11 +461,10 @@ get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     if (chained_ufunc->obj) {
         if (!PyList_Check(chained_ufunc->obj)) {
             PyErr_SetString(PyExc_ValueError,
-                            "ufunc does not contain chain list with "
-                            "tuple elements.");
+                            "ufunc does not contain chain list.");
             return NULL;
         }
-        chain_info = (ufunc_chain_info *)chained_ufunc->data[0];
+        ufunc_chain_info *chain_info = (ufunc_chain_info *)chained_ufunc->data[0];
         nlink = chain_info->nlink;
         ufuncs = chain_info->ufuncs;
         op_indices = chain_info->op_indices;
@@ -500,17 +478,15 @@ get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     if (links == NULL) {
         return NULL;
     }
-    for (ilink = 0; ilink < nlink; ilink++) {
-        int iop;
+    for (int ilink = 0; ilink < nlink; ilink++) {
         PyUFuncObject *ufunc = ufuncs[ilink];
-        PyObject *ufunc_obj = (PyObject *)ufunc;
         int nop = ufunc->nargs;
         link = PyTuple_New(2);
         op_map = PyList_New(nop);
         if (link == NULL || op_map == NULL) {
             goto fail;
         }
-        for (iop = 0; iop < nop; iop++) {
+        for (int iop = 0; iop < nop; iop++) {
             int index = op_indices ? *op_indices++: iop;
             PyObject *index_obj = PyLong_FromLong(index);
             if (index_obj == NULL) {
@@ -518,8 +494,8 @@ get_chain(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
             }
             PyList_SET_ITEM(op_map, iop, index_obj);
         }
-        Py_INCREF(ufunc_obj);
-        PyTuple_SET_ITEM(link, 0, ufunc_obj);
+        Py_INCREF((PyObject *)ufunc);
+        PyTuple_SET_ITEM(link, 0, (PyObject *)ufunc);
         PyTuple_SET_ITEM(link, 1, op_map);
         PyList_SET_ITEM(links, ilink, link);
     }
@@ -553,20 +529,16 @@ static struct PyModuleDef moduledef = {
 
 /* Initialization function for the module */
 PyMODINIT_FUNC PyInit_ufunc_chain(void) {
-    PyObject *m;
-    PyObject *d;
-    PyObject *version;
-
-    m = PyModule_Create(&moduledef);
+    PyObject *m = PyModule_Create(&moduledef);
     if (m == NULL) {
         return NULL;
     }
+
     import_array();
     import_ufunc();
 
-    d = PyModule_GetDict(m);
-
-    version = PyUnicode_FromString("0.1");
+    PyObject *d = PyModule_GetDict(m);
+    PyObject *version = PyUnicode_FromString("0.1");
     PyDict_SetItemString(d, "__version__", version);
     Py_DECREF(version);
 
