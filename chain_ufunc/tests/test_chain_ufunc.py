@@ -69,6 +69,7 @@ class TestCache:
                               (np.multiply, [2, 3, 5]),
                               (np.add, [4, 5, 4])],
                              4, 1, 1))
+
     @staticmethod
     def fun(a, b, c, d):
         return a*b + c*d
