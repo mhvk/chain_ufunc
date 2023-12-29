@@ -257,8 +257,8 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         Parameters
         ----------
         offsets : sequence of int
-            Offset to apply for each of the input, output, and temporary indices
-            in the existing maps.
+            Offset to apply for each of the input, output, and temporary
+            indices in the existing maps.
 
         Returns
         -------
@@ -268,10 +268,29 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         return [[i + offsets[i] for i in link[1]]
                 for link in self.links]
 
-    def _together_with(self, other):
-        """Add a link with independent inputs and outputs."""
-        # First adjust the input and output maps for self, so they can be interleaved.
-        # And re-use temporaries, keeping whatever is the larger number each has.
+    def _combine_inputs(self, *inputs):
+        """Add one or more links with independent inputs and outputs.
+
+        Parameters
+        ----------
+        *inputs: WrappedUfunc
+            The links to combine.
+
+        Returns
+        -------
+        combined : WrappedUfunc
+            The combined inputs.
+
+        """
+        if len(inputs) == 1:
+            return inputs[0]
+        elif len(inputs) > 2:
+            first_two = self._combine_inputs(*inputs[:2])
+            return self._combine_inputs(first_two, *inputs[2:])
+
+        self, other = inputs
+        # First adjust the input and output maps, so they can be interleaved.
+        # Re-use temporaries, keeping whatever is the larger number each has.
         self_maps = self._adjusted_maps(
             [0]*self.nin
             + [other.nin]*self.nout
@@ -297,8 +316,17 @@ class WrappedUfunc(NDArrayOperatorsMixin):
                                max(self.ntmp, other.ntmp),
                                names=(in_names + out_names + tmp_names))
 
-    def _as_input_for(self, other):
-        """Create a new chain in which our output(s) as used as input for other."""
+    def _linked_to(self, other):
+        """Create a new chain with our output(s) used as input for other.
+
+        If ``other`` needs more inputs than we have outputs, the result
+        will have additional inputs.
+
+        Parameters
+        ----------
+        other : WrappedUfunc
+            The ufunc that will get (some of) our inputs.
+        """
         if isinstance(other, (ChainedUfunc, np.ufunc)):
             other = self.__class__(other)
         elif not isinstance(other, WrappedUfunc):
@@ -355,6 +383,8 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         return can_handle
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        # We only deal with the case where the inputs are WrappedUfunc.
+        # The combination of WrappedUfunc and Input is dealt with by Input.
         if not self._can_handle(ufunc, method, *inputs, **kwargs):
             return NotImplemented
 
@@ -367,13 +397,10 @@ class WrappedUfunc(NDArrayOperatorsMixin):
             if [a.outsel for a in inputs] != list(range(self.ufunc.nout)):
                 raise NotImplementedError("not all outputs")
 
-            return self._as_input_for(wrapped_ufunc)
+            return self._linked_to(wrapped_ufunc)
         else:
             # combine inputs
-            combined_input = inputs[0]
-            for input_ in inputs[1:]:
-                combined_input = combined_input._together_with(input_)
-            return combined_input._as_input_for(wrapped_ufunc)
+            return self._combine_inputs(*inputs)._linked_to(wrapped_ufunc)
 
     def __getitem__(self, item):
         if self.ufunc.nout == 1:
@@ -465,46 +492,47 @@ class Input(InOut):
         return can_handle
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        # we're a mapping, and should turn the ufunc that called us
-        # into a chainable version.
+        # We're a mapping, and should turn the ufunc that called us
+        # into a chainable version.  We return NotImplemented if out
+        # is given; that should be handed by Output.  However, we
+        # deal with the case where one of the inputs is a WrappedUfunc.
         if not self._can_handle(method, *inputs, **kwargs):
             return NotImplemented
 
-        if not all(isinstance(a, Input) for a in inputs):
+        if all(isinstance(a, Input) for a in inputs):
+            result = WrappedUfunc(ufunc)
+            result.names[:result.nin] = [a.name for a in inputs]
+            if len(n := result.names) - n.count(None) != len(set(n) - {None}):
+                raise NotImplementedError("duplicate names")
+            return result
+
+        else:
+            # For not all Input, only deal with 2-input case for now
+            # (cannot get here with 1 input).
             if ufunc.nin > 2:
                 raise NotImplementedError('>2 inputs, with some not Input')
-
+            # Have one Input and one WrappedUfunc, whose output we should use.
             input_first = isinstance(inputs[0], Input)
-            result = inputs[input_first]
-            input_ = inputs[1-input_first]
+            input_ = inputs[0 if input_first else 1]
+            result = inputs[1 if input_first else 0]
             if result.ufunc.nout > 1:
                 raise NotImplementedError('>1 output for non-Input input')
-
-            result = result._as_input_for(ufunc)
-            names = result.names
+            # Add ufunc to the chain and them substitute the new input.
+            result = result._linked_to(ufunc)
             if input_first:
                 op_maps = result._adjusted_maps(
                     [1]*result.nin + [0]*(result.nout + result.ntmp))
                 op_maps[-1][ufunc.nin-1] = 0
-                names[:result.nin] = ([input_.name]
-                                      + result.names[:result.nin-1])
+                links = [(l[0], m) for (l, m) in zip(result.links, op_maps)]
+                names = ([input_.name]
+                         + result.names[:result.nin-1]  # Shift names up.
+                         + result.names[result.nin:])
+                return result.from_chain(links,
+                                         result.nin, result.nout,
+                                         result.ntmp, result.__name__, names)
             else:
-                op_maps = [link[1] for link in result.links]
-                names[result.ufunc.nin - 1] = input_.name
-
-        else:
-            result = WrappedUfunc(ufunc)
-            names = [a.name for a in inputs] + result.names[ufunc.nin:]
-            op_maps = [link[1] for link in result.links]
-            if len(names) - names.count(None) != len(set(names) - {None}):
-                raise NotImplementedError("duplicate names")
-
-        links = [(l[0], m) for (l, m) in zip(result.links, op_maps)]
-        result = result.from_chain(links,
-                                   result.nin, result.nout,
-                                   result.ntmp, result.__name__, names)
-
-        return result
+                result.names[result.ufunc.nin - 1] = input_.name
+                return result
 
 
 class Output(InOut):

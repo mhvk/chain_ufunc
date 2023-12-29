@@ -76,7 +76,7 @@ class TestOperators:
                                  (np.add, [4, 5, 4])]
         assert mul2add.names == ["a", "b", "c", "d", None, None]
 
-    @pytest.mark.xfail(reason="No support for out arguments in __array_ufunc__")
+    @pytest.mark.xfail(reason="No support for 'out' in __array_ufunc__")
     def test_mul2add2(self):
         def fun(a, b, c, d):
             out = a*b
@@ -130,6 +130,6 @@ class TestIdentities:
 class TestOpMaps:
     def test_modf_modf(self):
         modf = np.modf(Input())
-        modfmodf = modf._as_input_for(modf)
+        modfmodf = modf._linked_to(modf)
         assert modfmodf.links == [(np.modf, [0, 1, 3]),
                                   (np.modf, [1, 1, 2])]
