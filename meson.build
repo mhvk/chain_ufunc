@@ -1,4 +1,6 @@
-project('chain_ufunc', 'c',
+project(
+  'chain_ufunc',
+  'c',
   version : '0.1',
 )
 
@@ -15,20 +17,21 @@ print(os.path.relpath(np.get_include()))
     ],
     check: true
   ).stdout().strip()
-message(incdir_numpy)
 inc_np = include_directories(incdir_numpy)
 
-c_sources = ['chain_ufunc/ufunc_chain.c']
+c_sources = ['src/ufunc_chain.c']
 
 # add_global_arguments('-DCHAIN_DEBUG', language : 'c')
-py.extension_module('ufunc_chain',
+py.extension_module(
+  'ufunc_chain',
   c_sources,
   install: true,
   include_directories: inc_np,
-  subdir: 'chain_ufunc',
+  install_dir: py.get_install_dir() / 'chain_ufunc',
 )
 
-install_subdir('chain_ufunc',
+install_subdir(
+  'chain_ufunc',
   install_dir: py.get_install_dir(),
-  exclude_files: c_sources
+  install_tag: 'python-runtime',
 )

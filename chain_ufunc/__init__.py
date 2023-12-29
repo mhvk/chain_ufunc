@@ -1,1 +1,1 @@
-from .chain_ufunc import *
+from .core import *
