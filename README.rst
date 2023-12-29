@@ -32,7 +32,7 @@ Example:
   [(<ufunc 'multiply'>, [0, 1, 4]),
    (<ufunc 'multiply'>, [2, 3, 5]),
    (<ufunc 'add'>, [4, 5, 4])]
-  >>> ufunc.graph()
+  >>> ufunc.graph()  # doctest: +SKIP
   <graphviz.graphs.Digraph object at ...>
 
 On an jupyter notebook with ``graphviz`` installed, the latter gives a

@@ -24,7 +24,6 @@ requires = [
 test = [
     "pytest",
     "pytest-doctestplus",
-    "graphviz",
 ]
 all = [
     "graphviz",
