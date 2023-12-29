@@ -226,6 +226,13 @@ class WrappedUfunc(NDArrayOperatorsMixin):
             self.__name__ = ufunc.__name__
         self.nargs = self.nin + self.nout
 
+    @classmethod
+    def from_chain(cls, links, nin, nout, ntmp,
+                   name='chained_ufunc', names=None):
+        ufunc = create_chained_ufunc(links, nin, nout, ntmp,
+                                     name, names)
+        return cls(ufunc)
+
     @property
     def arg_names(self):
         return [arg_name(self.names, i, self.nin, self.nout)
@@ -245,21 +252,26 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         return output[self.outsel] if self.outsel else output
 
     def _adjusted_maps(self, offsets):
+        """Adjust own maps by the given offsets.
+
+        Parameters
+        ----------
+        offsets : sequence of int
+            Offset to apply for each of the input, output, and temporary indices
+            in the existing maps.
+
+        Returns
+        -------
+        maps : list of list
+            For each link, the adjusted map.
+        """
         return [[i + offsets[i] for i in link[1]]
                 for link in self.links]
 
-    @classmethod
-    def from_chain(cls, links, nin, nout, ntmp,
-                   name='chained_ufunc', names=None):
-        ufunc = create_chained_ufunc(links, nin, nout, ntmp,
-                                     name, names)
-        return cls(ufunc)
-
-    def __and__(self, other):
-        if not isinstance(other, WrappedUfunc):
-            return NotImplemented
-
-        # first adjust the input and output maps for self
+    def _together_with(self, other):
+        """Add a link with independent inputs and outputs."""
+        # First adjust the input and output maps for self, so they can be interleaved.
+        # And re-use temporaries, keeping whatever is the larger number each has.
         self_maps = self._adjusted_maps(
             [0]*self.nin
             + [other.nin]*self.nout
@@ -268,6 +280,7 @@ class WrappedUfunc(NDArrayOperatorsMixin):
             [self.nin]*other.nin
             + [self.nin + self.nout]*(other.nout + other.ntmp))
 
+        # Combine names, preferring those from self for tempories.
         in_names = self.names[:self.nin] + other.names[:other.nin]
         out_names = (self.names[self.nin:self.nargs]
                      + other.names[other.nin:other.nargs])
@@ -284,7 +297,8 @@ class WrappedUfunc(NDArrayOperatorsMixin):
                                max(self.ntmp, other.ntmp),
                                names=(in_names + out_names + tmp_names))
 
-    def __or__(self, other):
+    def _as_input_for(self, other):
+        """Create a new chain in which our output(s) as used as input for other."""
         if isinstance(other, (ChainedUfunc, np.ufunc)):
             other = self.__class__(other)
         elif not isinstance(other, WrappedUfunc):
@@ -295,7 +309,7 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         extra_nin = max(other.nin - self.nout, 0)
         extra_nout = max(self.nout - other.nin, 0)
         nin = self.nin + extra_nin
-        # take as many inputs as needed and can be provided from our outputs
+        # Take as many inputs as needed and can be provided from our outputs
         # (or rather where they will be after remapping).
         n_other_in_from_self_out = min(other.nin, self.nout)
 
@@ -315,13 +329,12 @@ class WrappedUfunc(NDArrayOperatorsMixin):
             + [self.nin - n_other_in_from_self_out]*extra_nin
             + [nin - other.nin]*other.nout
             + [nin - other.nin + extra_nout]*other.ntmp)
-
         other_op_maps = other._adjusted_maps(other_offsets)
 
         ntmp = max(self.nout + self.ntmp - nout,
                    other.nout + other.ntmp - nout, 0)
 
-        # Find names for new map positions from self and other
+        # Find names for new map positions from self and other.
         s_names = [None]*(nin + nout + ntmp)
         o_names = [None]*(nin + nout + ntmp)
         for i, (offset, name) in enumerate(zip(self_offsets, self.names)):
@@ -334,12 +347,6 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         links = [(l[0], m) for (l, m) in zip(self.links + other.links,
                                              self_op_maps + other_op_maps)]
         return self.from_chain(links, nin, nout, ntmp, names=names)
-
-    def __ior__(self, other):
-        return NotImplemented
-
-    def __iand__(self, other):
-        return NotImplemented
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs
@@ -360,13 +367,13 @@ class WrappedUfunc(NDArrayOperatorsMixin):
             if [a.outsel for a in inputs] != list(range(self.ufunc.nout)):
                 raise NotImplementedError("not all outputs")
 
-            return self | wrapped_ufunc
+            return self._as_input_for(wrapped_ufunc)
         else:
             # combine inputs
             combined_input = inputs[0]
             for input_ in inputs[1:]:
-                combined_input &= input_
-            return combined_input | wrapped_ufunc
+                combined_input = combined_input._together_with(input_)
+            return combined_input._as_input_for(wrapped_ufunc)
 
     def __getitem__(self, item):
         if self.ufunc.nout == 1:
@@ -473,7 +480,7 @@ class Input(InOut):
             if result.ufunc.nout > 1:
                 raise NotImplementedError('>1 output for non-Input input')
 
-            result |= ufunc
+            result = result._as_input_for(ufunc)
             names = result.names
             if input_first:
                 op_maps = result._adjusted_maps(
