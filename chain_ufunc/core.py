@@ -1,7 +1,8 @@
 import textwrap
 import itertools
-import numpy as np
 
+import numpy as np
+from numpy.lib.mixins import NDArrayOperatorsMixin
 
 __all__ = ['ChainedUfunc', 'create_chained_ufunc', 'get_chain',
            'create_from_doc', 'WrappedUfunc', 'Input', 'Output']
@@ -193,7 +194,7 @@ def create_from_doc(doc):
     return create_chained_ufunc(*parse_doc(doc))
 
 
-class WrappedUfunc:
+class WrappedUfunc(NDArrayOperatorsMixin):
     """Wraps a ufunc so it can be used to construct chains.
 
     Parameters
@@ -334,6 +335,12 @@ class WrappedUfunc:
                                              self_op_maps + other_op_maps)]
         return self.from_chain(links, nin, nout, ntmp, names=names)
 
+    def __ior__(self, other):
+        return NotImplemented
+
+    def __iand__(self, other):
+        return NotImplemented
+
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
         can_handle = ('out' not in kwargs
                       and method == '__call__'
@@ -436,7 +443,7 @@ class WrappedUfunc:
         return dg
 
 
-class InOut:
+class InOut(NDArrayOperatorsMixin):
     def __init__(self, name=None):
         self.name = name
         self.names = [name]

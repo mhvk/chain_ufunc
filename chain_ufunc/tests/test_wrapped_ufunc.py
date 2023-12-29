@@ -1,4 +1,7 @@
 import numpy as np
+import pytest
+from numpy.testing import assert_array_equal
+
 from chain_ufunc import Input
 
 
@@ -44,6 +47,53 @@ class TestSimple:
         muladd = np.add(Input(), np.multiply(Input(), Input()))
         tst = muladd(np.pi, self.degrees, self.deg2rad)
         assert np.all(tst == np.pi + self.degrees * self.deg2rad)
+
+
+class TestOperators:
+    @classmethod
+    def setup_class(self):
+        self.degrees = np.array([0., 30., 90., 150., 180.,
+                                 210., 270., 330., 360.])
+        self.deg2rad = np.array(np.pi/180.)
+
+    def test_add(self):
+        add = Input() + Input()
+        assert_array_equal(add(self.degrees, self.degrees),
+                           np.add(self.degrees, self.degrees))
+
+    def test_muladd(self):
+        muladd = Input() * Input() + Input()
+        assert muladd.links == [(np.multiply, [0, 1, 3]),
+                                (np.add, [3, 2, 3])]
+
+    def test_mul2add(self):
+        def fun(a, b, c, d):
+            return a*b + c*d
+
+        mul2add = fun(Input("a"), Input("b"), Input("c"), Input("d"))
+        assert mul2add.links == [(np.multiply, [0, 1, 4]),
+                                 (np.multiply, [2, 3, 5]),
+                                 (np.add, [4, 5, 4])]
+        assert mul2add.names == ["a", "b", "c", "d", None, None]
+
+    @pytest.mark.xfail(reason="No support for out arguments in __array_ufunc__")
+    def test_mul2add2(self):
+        def fun(a, b, c, d):
+            out = a*b
+            tmp = c*d
+            out += tmp
+            return out
+
+        mul2add = fun(Input("a"), Input("b"), Input("c"), Input("d"))
+        assert mul2add.links == [(np.multiply, [0, 1, 4]),
+                                 (np.multiply, [2, 3, 5]),
+                                 (np.add, [4, 5, 4])]
+        assert mul2add.names == ["a", "b", "c", "d", None, None]
+
+    def test_two_functions(self):
+        mulsin = np.sin(Input() * Input())
+        tst = mulsin(self.degrees, self.deg2rad)
+        assert_array_equal(tst, np.sin(self.degrees * self.deg2rad))
 
 
 class TestIndexing:

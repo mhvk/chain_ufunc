@@ -26,7 +26,7 @@ Example:
   >>> import numpy as np
   >>> from chain_ufunc import Input
   >>> def fun(a, b, c, d):
-  ...     return np.add(np.multiply(a, b), np.multiply(c, d))
+  ...     return a*b + c*d
   >>> ufunc = fun(Input(), Input(), Input(), Input())
   >>> ufunc.links
   [(<ufunc 'multiply'>, [0, 1, 4]),
