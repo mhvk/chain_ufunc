@@ -1,6 +1,6 @@
 import numpy as np
-import pytest
 from numpy.testing import assert_array_equal
+import pytest
 
 from chain_ufunc import Input
 
@@ -76,7 +76,6 @@ class TestOperators:
                                  (np.add, [4, 5, 4])]
         assert mul2add.names == ["a", "b", "c", "d", None, None]
 
-    @pytest.mark.xfail(reason="No support for 'out' in __array_ufunc__")
     def test_mul2add2(self):
         def fun(a, b, c, d):
             out = a*b
@@ -89,6 +88,14 @@ class TestOperators:
                                  (np.multiply, [2, 3, 5]),
                                  (np.add, [4, 5, 4])]
         assert mul2add.names == ["a", "b", "c", "d", None, None]
+
+    @pytest.mark.xfail(reason='cannot deal with duplicate inputs yet')
+    def test_add_same_wrapped_ufunc(self):
+        mul = np.multiply(Input("a"), Input("b"))
+        uf = mul+mul
+        assert uf.names == ["a", "b", None]
+        a = np.arange(4.)
+        assert_array_equal(uf(a, a), 2.*a*a)
 
     def test_two_functions(self):
         mulsin = np.sin(Input() * Input())

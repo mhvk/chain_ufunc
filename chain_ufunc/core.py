@@ -377,10 +377,12 @@ class WrappedUfunc(NDArrayOperatorsMixin):
         return self.from_chain(links, nin, nout, ntmp, names=names)
 
     def _can_handle(self, ufunc, method, *inputs, **kwargs):
-        can_handle = ('out' not in kwargs
-                      and method == '__call__'
-                      and all(isinstance(a, WrappedUfunc) for a in inputs))
-        return can_handle
+        return (method == '__call__'
+                and all(isinstance(a, WrappedUfunc) for a in inputs)
+                and ((outputs := kwargs.get('out')) is None
+                     or (len(outputs) == 1  # in-place output is OK.
+                         and ((out := outputs[0]) is None
+                              or out is inputs[0]))))
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         # We only deal with the case where the inputs are WrappedUfunc.
@@ -399,7 +401,7 @@ class WrappedUfunc(NDArrayOperatorsMixin):
 
             return self._linked_to(wrapped_ufunc)
         else:
-            # combine inputs
+            # Combine inputs and use as input for the ufunc.
             return self._combine_inputs(*inputs)._linked_to(wrapped_ufunc)
 
     def __getitem__(self, item):
@@ -485,11 +487,10 @@ class InOut(NDArrayOperatorsMixin):
 
 class Input(InOut):
     def _can_handle(self, method, *inputs, **kwargs):
-        can_handle = (method == '__call__'
-                      and all(isinstance(a, (Input, WrappedUfunc))
-                              for a in inputs)
-                      and 'out' not in kwargs)
-        return can_handle
+        return (method == '__call__'
+                and all(isinstance(a, (Input, WrappedUfunc))
+                        for a in inputs)
+                and 'out' not in kwargs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         # We're a mapping, and should turn the ufunc that called us
@@ -537,13 +538,10 @@ class Input(InOut):
 
 class Output(InOut):
     def _can_handle(self, method, *inputs, **kwargs):
-        can_handle = (method == '__call__'
-                      and all(isinstance(a, (Input, WrappedUfunc))
-                              for a in inputs)
-                      and 'out' in kwargs
-                      and all(a is None or isinstance(a, Output)
-                              for a in kwargs['out']))
-        return can_handle
+        return (method == '__call__'
+                and all(isinstance(a, (Input, WrappedUfunc)) for a in inputs)
+                and (outputs := kwargs.get('out')) is not None
+                and all(a is None or isinstance(a, Output) for a in outputs))
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         # we're a mapping, and should turn the ufunc that called us
